@@ -135,7 +135,7 @@ if (!publish) {
   build();
   if (sh("git", ["status", "--porcelain", "module.json", "package.json"])) {
     sh("git", ["add", "module.json", "package.json"]);
-    sh("git", ["commit", "-m", `Release ${tag}\n\nCo-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>`]);
+    sh("git", ["commit", "-m", `Release ${tag}`]);
   }
   sh("git", ["tag", "-a", tag, "-m", `Release ${tag}`]);
   sh("git", ["push", "origin", "HEAD:main"]);
