@@ -14,6 +14,7 @@ import {
   wallBox, doorPose, isRenderableWall, isDoor, showAsDoor, wallMaterialKey, glassMaterialKey, windowSections, WALL_KIND,
 } from "../core/walls.mjs";
 import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
+import { unlitBrightness } from "../core/lighting.mjs";
 import { FOG } from "../core/vision.mjs";
 import {
   SPRITE_FACING, tokenFacingYaw, directionRow, animationColumn, sheetCellUV, snapTacticsYaw,
@@ -62,6 +63,9 @@ const FOG_VALUE = { [FOG.UNSEEN]: 0, [FOG.EXPLORED]: 110, [FOG.VISIBLE]: 255 };
 
 const FOG_VERTEX_PARS = "varying vec3 vF3dWorld;\nvarying vec3 vF3dNormal;\n";
 const FOG_FRAGMENT_PARS = `
+uniform sampler2D f3dLightMap;
+uniform float f3dLightOn;
+uniform float f3dUnlit;
 uniform sampler2D f3dFogMap;
 uniform float f3dFogOn;
 uniform vec2 f3dFogMin;
@@ -90,6 +94,19 @@ float f3dFogCellDilated() {
   vec2 c = floor(f3dFogUV() * f3dFogSize);
   return max(f3dFogAt(c), max(max(f3dFogAt(c + vec2(1.0, 0.0)), f3dFogAt(c - vec2(1.0, 0.0))),
                               max(f3dFogAt(c + vec2(0.0, 1.0)), f3dFogAt(c - vec2(0.0, 1.0)))));
+}
+// Foundry lighting: r = light level (0 dark, .5 dim, 1 bright), g = seen in darkness (darkvision).
+vec3 f3dApplyLight(vec3 c) {
+  if (f3dLightOn < 0.5) return c;
+  vec2 uv = f3dFogUV();
+  vec2 lv = (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) ? vec2(0.0) : texture2D(f3dLightMap, uv).rg;
+  vec3 lit = c * mix(f3dUnlit, 1.0, clamp(lv.r * 1.15, 0.0, 1.0));
+  if (lv.g > 0.5) {
+    // Darkvision: visible without light shows in greys, like Foundry's vision modes.
+    float lum = dot(c, vec3(0.299, 0.587, 0.114));
+    lit = mix(vec3(lum) * 0.62, lit, smoothstep(0.15, 0.6, lv.r));
+  }
+  return lit;
 }
 vec3 f3dApplyFog(vec3 c) {
   if (f3dFogOn < 0.5) return c;
@@ -205,6 +222,9 @@ export class View3D {
 
     // Fog of war: one texel per grid square, shared by every fog-aware material.
     this.fogUniforms = {
+      f3dLightMap: { value: null },
+      f3dLightOn: { value: 0 },
+      f3dUnlit: { value: 1 },
       f3dFogMap: { value: null },
       f3dFogOn: { value: 0 },
       f3dFogMin: { value: new THREE.Vector2() },
@@ -284,7 +304,7 @@ export class View3D {
         "#include <opaque_fragment>",
         "#include <opaque_fragment>\n" +
           (hideUnseen ? `  if (f3dFogOn > 0.5 && ${hideUnseen === "dilate" ? "f3dFogCellDilated" : "f3dFogCell"}() < 0.04) discard;\n` : "") +
-          "  gl_FragColor.rgb = f3dApplyFog(gl_FragColor.rgb);",
+          "  gl_FragColor.rgb = f3dApplyFog(f3dApplyLight(gl_FragColor.rgb));",
       );
     };
     material.customProgramCacheKey = () => `f3d-fog-${hideUnseen || "show"}-${extra?.key ?? ""}`;
@@ -313,6 +333,14 @@ export class View3D {
     fogTex.needsUpdate = true;
     this.fogUniforms.f3dFogMap.value?.dispose();
     this.fogUniforms.f3dFogMap.value = fogTex;
+    const lightTex = new THREE.DataTexture(new Uint8Array(g.cols * g.rows * 2), g.cols, g.rows, THREE.RGFormat, THREE.UnsignedByteType);
+    lightTex.magFilter = THREE.LinearFilter;
+    lightTex.minFilter = THREE.LinearFilter;
+    lightTex.needsUpdate = true;
+    this.fogUniforms.f3dLightMap.value?.dispose();
+    this.fogUniforms.f3dLightMap.value = lightTex;
+    this.fogUniforms.f3dLightOn.value = 0;
+    this.lightMapOn = false;
     const min = canvasToWorld(g, g.sceneX, g.sceneY);
     this.fogUniforms.f3dFogMin.value.set(min.x, min.z);
     this.fogUniforms.f3dFogSize.value.set(g.cols, g.rows);
@@ -813,7 +841,7 @@ export class View3D {
     const pivot = new THREE.Group(); // tilts the card back when looking from above
     const card = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
-      new THREE.MeshBasicMaterial({ transparent: true, alphaTest: 0.08, side: THREE.DoubleSide, color: 0xffffff }),
+      this._fogged(new THREE.MeshBasicMaterial({ transparent: true, alphaTest: 0.08, side: THREE.DoubleSide, color: 0xffffff })),
     );
     card.geometry.translate(0, 0.5, 0); // pivot at the bottom edge
     card.userData.tokenId = t.id;
@@ -822,7 +850,7 @@ export class View3D {
     const color = DISPOSITION_COLORS[String(t.disposition ?? 0)] ?? 0xd4ac0d;
     const base = new THREE.Mesh(
       new THREE.CylinderGeometry(0.42, 0.45, 0.06, 32),
-      new THREE.MeshLambertMaterial({ color, transparent: true }),
+      this._fogged(new THREE.MeshLambertMaterial({ color, transparent: true })),
     );
     base.position.y = 0.03;
     base.userData.tokenId = t.id;
@@ -1004,10 +1032,42 @@ export class View3D {
   setLights(lights, darkness = this.darkness) {
     this.lights = lights ?? [];
     this.darkness = Math.min(1, Math.max(0, Number(darkness) || 0));
-    const a = ambientForDarkness(this.darkness);
+    this._applyAmbient();
+    this._updateLights();
+  }
+
+  _applyAmbient() {
+    // With a light map, darkness is applied per square (lit squares stay bright).
+    const a = this.lightMapOn ? 1 : ambientForDarkness(this.darkness);
     this.hemi.intensity = 1.6 * a;
     this.sun.intensity = 1.6 * a;
-    this._updateLights();
+    this.fogUniforms.f3dUnlit.value = unlitBrightness(this.darkness);
+  }
+
+  /**
+   * Per-square lighting from Foundry's light sources.
+   * @param {Uint8Array|null} levels  lightLevels() result (cols*rows), or null to turn it off
+   * @param {{vision?:Uint8Array|null}} [o]  squares seen without light (darkvision): 1 = yes
+   */
+  setLightMap(levels, { vision = null } = {}) {
+    const tex = this.fogUniforms.f3dLightMap.value;
+    if (!levels || !tex) {
+      this.lightMapOn = false;
+      this.fogUniforms.f3dLightOn.value = 0;
+      this._applyAmbient();
+      return;
+    }
+    const data = tex.image.data;
+    const n = Math.min(levels.length, data.length / 2);
+    for (let i = 0; i < n; i++) {
+      data[i * 2] = levels[i];
+      data[i * 2 + 1] = vision && vision[i] && levels[i] < 64 ? 255 : 0;
+    }
+    tex.needsUpdate = true;
+    this.lightLevels = levels;
+    this.lightMapOn = true;
+    this.fogUniforms.f3dLightOn.value = 1;
+    this._applyAmbient();
   }
 
   _updateLights() {
@@ -1023,7 +1083,8 @@ export class View3D {
     });
     const chosen = selectLights(resolved, focus, this.lightPool.length);
     // Lights matter most in the dark; in daylight they only add a gentle tint.
-    const strength = 0.6 + 2.4 * this.darkness;
+    // With Foundry's light map the squares are already lit; point lights only add their colour.
+    const strength = (0.6 + 2.4 * this.darkness) * (this.lightMapOn ? 0.35 : 1);
     this.lightPool.forEach((pl, i) => {
       const l = chosen[i];
       if (!l) {
@@ -1538,6 +1599,7 @@ export class View3D {
     this.textureCache.clear();
     this.bgTexture?.dispose();
     this.fogUniforms.f3dFogMap.value?.dispose();
+    this.fogUniforms.f3dLightMap.value?.dispose();
     this.rulerLabel.remove();
     this.renderer.dispose();
     this.renderer.domElement.remove();

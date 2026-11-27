@@ -14,7 +14,8 @@ import { createInteraction } from "../scripts/ui/interact.mjs";
 import { modelFromJSON } from "../scripts/core/scene-model.mjs";
 import { getHeight } from "../scripts/core/heights.mjs";
 import { drawDungeon, drawToken, drawBalcony, drawRug, drawRoof, drawBricks, drawPlanks, drawSpriteSheet } from "./art.mjs";
-import { losVisibilityTest, visibleCells, fogStates, FOG } from "../scripts/core/vision.mjs";
+import { losVisibilityTest, visibleCells, fogStates, FOG, computeLOS, pointInPolygon } from "../scripts/core/vision.mjs";
+import { lightLevels } from "../scripts/core/lighting.mjs";
 import { gridSquares, DIAGONALS, formatDistance } from "../scripts/core/scene-extras.mjs";
 import { canvasToWorld, canvasToCell, tokenCenter } from "../scripts/core/coords.mjs";
 
@@ -76,10 +77,32 @@ function computeFog() {
   return fog.states;
 }
 
+/** Light map like Foundry's: scene lights + token lights, clipped by walls with our line of sight. */
+function computeLightMap(states) {
+  const g = model.grid;
+  if (!(model.darkness >= 0.05) || params.has("nolightmap")) return view.setLightMap(null);
+  const groundWalls = model.walls.filter((w) => (w.levelIndex ?? 0) === 0);
+  const bounds = { x: g.sceneX, y: g.sceneY, width: g.sceneWidth, height: g.sceneHeight };
+  const px = (units) => (units / g.distance) * g.size;
+  const sources = model.lights.map((l) => {
+    let x = l.x, y = l.y;
+    if (l.tokenId) {
+      const tok = model.tokens.find((tk) => tk.id === l.tokenId);
+      if (!tok) return null;
+      ({ x, y } = tokenCenter(g, tok));
+    }
+    const poly = computeLOS({ x, y }, groundWalls, { radius: px(Math.max(l.dim, l.bright)), bounds });
+    return { x, y, bright: px(l.bright), dim: px(l.dim), contains: (cx, cy) => pointInPolygon(cx, cy, poly) };
+  }).filter(Boolean);
+  const vision = states ? Uint8Array.from(states, (s) => (s === FOG.VISIBLE ? 1 : 0)) : null;
+  view.setLightMap(lightLevels(g, sources), { vision });
+}
+
 function refreshVisibility() {
   const g = model.grid;
   const states = playerView ? computeFog() : null;
   view.setFog(states);
+  computeLightMap(states);
   for (const tok of model.tokens) {
     let visible = true;
     if (playerView) {
@@ -350,9 +373,12 @@ async function runSelfTest() {
   frames(40);
   r.sheetRowChangesWithView = mage.sheetRow !== rowBefore && mage.sheetRow >= 0;
   r.sheetCellSized = Math.abs(mage.sheetTex.repeat.x - 0.5) < 1e-6 && Math.abs(mage.sheetTex.repeat.y - 0.25) < 1e-6;
-  const col0 = mage.sheetCol;
-  frames(9); // 4 fps -> a new frame within 0.3 s
-  r.sheetAnimates = mage.sheetCol !== col0;
+  const seenCols = new Set();
+  for (let i = 0; i < 20; i++) {
+    frames(1);
+    seenCols.add(mage.sheetCol);
+  }
+  r.sheetAnimates = seenCols.size === 2; // 2 frames at 4 fps over ~0.66 s
   view.setSpriteFacing("billboard");
   frames(2);
   r.billboardTilts = Math.abs(mage.pivot.rotation.x + (Math.PI / 2 - (90 - 30) * Math.PI / 180)) < 0.02;
@@ -363,6 +389,21 @@ async function runSelfTest() {
   r.raycastWorksInTactics = !!view.pickCell(canvas.getBoundingClientRect().width / 2, canvas.getBoundingClientRect().height / 2);
   hud.button("tactics").click();
   r.backToPerspective = view.camera.isPerspectiveCamera === true;
+
+  // 8e. Foundry-like light map
+  r.lightMapOn = view.lightMapOn === true && view.fogUniforms.f3dLightOn.value === 1;
+  const lg = model.grid;
+  const cellOf = (col, row) => view.lightLevels[row * lg.cols + col];
+  r.brazierLitBright = cellOf(19, 4) === 255; // brazier on the dais
+  r.farCornerDark = cellOf(23, 15) === 0; // rock far from every light
+  r.wallBlocksLight = cellOf(10, 9) === 0; // outside room A, behind its wall from the hero's torch
+  model.darkness = 0;
+  view.setLights(model.lights, 0);
+  refreshVisibility();
+  r.daylightNoLightMap = view.lightMapOn === false;
+  model.darkness = 0.55;
+  view.setLights(model.lights, 0.55);
+  refreshVisibility();
 
   // 9. player view: fog + vision
   setPlayerView(true);

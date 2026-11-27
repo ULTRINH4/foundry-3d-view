@@ -93,5 +93,7 @@
   "F3D.TokenConfig.Sheet": "Sprite sheet",
   "F3D.TokenConfig.Directions": "Directions (rows)",
   "F3D.TokenConfig.Frames": "Animation frames (columns)",
-  "F3D.TokenConfig.Fps": "Frames per second"
+  "F3D.TokenConfig.Fps": "Frames per second",
+  "F3D.Settings.FoundryLighting.Name": "Use Foundry lighting in 3D",
+  "F3D.Settings.FoundryLighting.Hint": "In darkness, each square is lit by the scene's real light sources (lights and token lights, blocked by walls); unlit squares are dark, and players see squares lit only by their vision (darkvision) in greys."
 }

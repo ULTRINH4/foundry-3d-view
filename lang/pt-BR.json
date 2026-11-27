@@ -93,5 +93,7 @@
   "F3D.TokenConfig.Sheet": "Folha de sprites",
   "F3D.TokenConfig.Directions": "Direções (linhas)",
   "F3D.TokenConfig.Frames": "Quadros de animação (colunas)",
-  "F3D.TokenConfig.Fps": "Quadros por segundo"
+  "F3D.TokenConfig.Fps": "Quadros por segundo",
+  "F3D.Settings.FoundryLighting.Name": "Usar a iluminação do Foundry no 3D",
+  "F3D.Settings.FoundryLighting.Hint": "No escuro, cada quadrado é iluminado pelas luzes reais da cena (luzes e tokens com luz, bloqueadas por paredes); quadrados sem luz ficam escuros, e jogadores veem em tons de cinza o que enxergam só pela visão (visão no escuro)."
 }

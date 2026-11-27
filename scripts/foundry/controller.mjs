@@ -7,6 +7,7 @@ import { buildSceneModel, tokenData } from "../core/scene-model.mjs";
 import { wallData } from "../core/walls.mjs";
 import { heightMapsEqual, normalizeHeightMap, getHeight } from "../core/heights.mjs";
 import { visibleCells, fogStates, losVisibilityTest } from "../core/vision.mjs";
+import { lightLevels } from "../core/lighting.mjs";
 import {
   tileData, lightData, tokenLightData, levelIndexFor, gridSquares, formatDistance, DIAGONALS,
 } from "../core/scene-extras.mjs";
@@ -344,7 +345,10 @@ export class Tactics3DController {
     for (const hook of ["createAmbientLight", "updateAmbientLight", "deleteAmbientLight"]) {
       this._on(hook, (doc) => inScene(doc) && this._refreshLights());
     }
-    this._on("lightingRefresh", () => this._refreshDarkness());
+    this._on("lightingRefresh", () => {
+      this._refreshDarkness();
+      this._queueFog();
+    });
 
     // v14 scene levels: edits change floors/backgrounds, so rebuild (switching the viewed level
     // already redraws the canvas and reloads us through canvasReady).
@@ -459,7 +463,11 @@ export class Tactics3DController {
    */
   _updateFog() {
     if (!this.view?.grid) return;
-    if (!this._fogEnabled()) return this.view.setFog(null);
+    if (!this._fogEnabled()) {
+      this.view.setFog(null);
+      this._updateLighting(null);
+      return;
+    }
     const g = this.view.grid;
     let test;
     const vis = canvas.visibility;
@@ -473,9 +481,55 @@ export class Tactics3DController {
       test = losVisibilityTest(sources, Array.from(canvas.scene.walls).map(wallData), g);
     }
     const id = canvas.scene.id;
-    const fog = fogStates(this._explored.get(id) ?? null, visibleCells(g, test));
+    const visible = visibleCells(g, test);
+    const fog = fogStates(this._explored.get(id) ?? null, visible);
     this._explored.set(id, fog.explored);
     this.view.setFog(fog.states);
+    this._updateLighting(visible);
+  }
+
+  /**
+   * Shade the 3D view with Foundry's lighting: each square is lit by the real light sources
+   * (ambient lights and token lights, clipped by walls), unlit squares get the scene darkness, and
+   * for players squares seen without light (darkvision) show in greys.
+   * @param {Uint8Array|null} visible  squares the player sees (null for the GM)
+   */
+  _updateLighting(visible) {
+    if (!this.view?.grid) return;
+    const darkness = currentDarkness();
+    const global = !!canvas.environment?.globalLightSource?.active;
+    if (!game.settings.get(MODULE_ID, "foundryLighting") || darkness < 0.05 || global) {
+      this.view.setLightMap(null);
+      return;
+    }
+    const sources = [];
+    for (const src of canvas.effects?.lightSources?.values?.() ?? []) {
+      if (!src?.active || src.isGlobal || src.isDarkness || src.constructor?.name === "GlobalLightSource") continue;
+      const d = src.data ?? {};
+      const shape = src.shape;
+      sources.push({
+        x: Number(d.x) || 0, y: Number(d.y) || 0, bright: Number(d.bright) || 0, dim: Number(d.dim) || 0,
+        contains: typeof shape?.contains === "function" ? (x, y) => shape.contains(x, y) : null,
+      });
+    }
+    const levels = lightLevels(this.view.grid, sources);
+    // Magical darkness areas (v12+ darkness sources) stay dark.
+    if (typeof canvas.effects?.testInsideDarkness === "function") {
+      const g = this.view.grid;
+      for (let r = 0; r < g.rows; r++) {
+        for (let c = 0; c < g.cols; c++) {
+          const i = r * g.cols + c;
+          if (!levels[i]) continue;
+          const p = cellCenter(g, c, r);
+          try {
+            if (canvas.effects.testInsideDarkness({ x: p.x, y: p.y })) levels[i] = 0;
+          } catch {
+            /* API differences: ignore */
+          }
+        }
+      }
+    }
+    this.view.setLightMap(levels, { vision: visible });
   }
 
   /* ---------------------------------------------------------------------------------------- */

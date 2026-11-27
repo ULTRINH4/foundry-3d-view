@@ -137,6 +137,14 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true,
   });
+  game.settings.register(MODULE_ID, "foundryLighting", {
+    name: "F3D.Settings.FoundryLighting.Name",
+    hint: "F3D.Settings.FoundryLighting.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
   game.settings.register(MODULE_ID, "cutaway", { scope: "client", config: false, type: Boolean, default: false });
   game.settings.register(MODULE_ID, "cameraMode", {
     name: "F3D.Settings.CameraMode.Name",
