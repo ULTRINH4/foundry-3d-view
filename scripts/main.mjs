@@ -3,6 +3,7 @@
  */
 import { MODULE_ID } from "./core/constants.mjs";
 import { Tactics3DController } from "./foundry/controller.mjs";
+import { injectWallConfig } from "./foundry/wall-config.mjs";
 
 const controller = new Tactics3DController();
 const TOOL = "f3dToggle";
@@ -25,6 +26,51 @@ Hooks.once("init", () => {
     type: Number,
     default: 0.5,
     range: { min: 0.1, max: 4, step: 0.1 },
+  });
+  const restyle = () => controller.applyWallStyle();
+  game.settings.register(MODULE_ID, "wallMode", {
+    name: "F3D.Settings.WallMode.Name",
+    hint: "F3D.Settings.WallMode.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    choices: {
+      map: "F3D.Settings.WallMode.Map",
+      texture: "F3D.Settings.WallMode.Texture",
+      flat: "F3D.Settings.WallMode.Flat",
+    },
+    default: "map",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "wallTexture", {
+    name: "F3D.Settings.WallTexture.Name",
+    hint: "F3D.Settings.WallTexture.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    filePicker: "image",
+    default: "",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "doorTexture", {
+    name: "F3D.Settings.DoorTexture.Name",
+    hint: "F3D.Settings.DoorTexture.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    filePicker: "image",
+    default: "",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "wallTextureScale", {
+    name: "F3D.Settings.WallTextureScale.Name",
+    hint: "F3D.Settings.WallTextureScale.Hint",
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 1,
+    range: { min: 0.25, max: 4, step: 0.25 },
+    onChange: restyle,
   });
   game.settings.register(MODULE_ID, "showGrid", {
     name: "F3D.Settings.ShowGrid.Name",
@@ -99,6 +145,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
     if (tokens?.tools) tokens.tools[TOOL] = tool;
   }
 });
+
+// Per-wall 3D texture field in the Wall configuration sheet (v13 ApplicationV2; v12 jQuery).
+Hooks.on("renderWallConfig", (app, html) => injectWallConfig(app, html));
 
 // Leaving the game view (e.g. scene deleted) must not leave a stale overlay around.
 Hooks.on("canvasTearDown", () => {

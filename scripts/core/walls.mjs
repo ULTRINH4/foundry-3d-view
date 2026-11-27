@@ -22,7 +22,37 @@ export function wallData(doc) {
     // Optional vertical extent in grid distance units (compatible with the "Wall Height" module flags).
     top: finiteOrNull(wh.top),
     bottom: finiteOrNull(wh.bottom),
+    // Optional per-wall texture (set in the Wall config sheet).
+    texture: doc.flags?.["foundry-3d-view"]?.texture || null,
   };
+}
+
+/** Wall appearance modes (module setting). */
+export const WALL_MODES = Object.freeze({ MAP: "map", TEXTURE: "texture", FLAT: "flat" });
+
+/**
+ * Which material a wall or door uses. Walls sharing a key are drawn together.
+ *   "flat"          plain colour
+ *   "map"           takes its look from the scene background image
+ *   "tex:<src>"     a tiled texture
+ *   "door" / "secretDoor"  plain door colours
+ * Priority: per-wall texture > (doors) door texture > mode.
+ * Closed secret doors seen by the GM always use "secretDoor" so they stay recognisable.
+ * @param {object} w            wallData()
+ * @param {object} o
+ * @param {string} o.mode       WALL_MODES value
+ * @param {string} [o.wallTexture]
+ * @param {string} [o.doorTexture]
+ * @param {boolean} [o.asDoor]  drawn as a door (see showAsDoor)
+ * @param {boolean} [o.hasMap]  a background image is available
+ */
+export function wallMaterialKey(w, { mode = WALL_MODES.MAP, wallTexture = "", doorTexture = "", asDoor = false, hasMap = true } = {}) {
+  if (asDoor && w.door === WALL_DOOR.SECRET) return "secretDoor";
+  if (w.texture) return `tex:${w.texture}`;
+  if (asDoor && doorTexture) return `tex:${doorTexture}`;
+  if (mode === WALL_MODES.TEXTURE && wallTexture) return `tex:${wallTexture}`;
+  if (mode === WALL_MODES.MAP && hasMap) return "map";
+  return asDoor ? "door" : "flat";
 }
 
 function finiteOrNull(v) {

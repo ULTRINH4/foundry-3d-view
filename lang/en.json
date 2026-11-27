@@ -33,5 +33,18 @@
   "F3D.Notify.Blocked": "A wall blocks that move.",
   "F3D.Notify.DoorLocked": "This door is locked.",
   "F3D.Settings.Fog3d.Name": "Fog of war in 3D",
-  "F3D.Settings.Fog3d.Hint": "Players only see the squares their tokens can see (explored squares stay dimmed). Uses the scene's token vision setting."
+  "F3D.Settings.Fog3d.Hint": "Players only see the squares their tokens can see (explored squares stay dimmed). Uses the scene's token vision setting.",
+  "F3D.Settings.WallMode.Name": "Wall look in 3D",
+  "F3D.Settings.WallMode.Hint": "Inherit from the map: wall tops show the map and faces take the colours of the wall as drawn on the map. Texture: tile the wall texture below. Flat: plain grey.",
+  "F3D.Settings.WallMode.Map": "Inherit from the map",
+  "F3D.Settings.WallMode.Texture": "Wall texture",
+  "F3D.Settings.WallMode.Flat": "Flat colour",
+  "F3D.Settings.WallTexture.Name": "Wall texture",
+  "F3D.Settings.WallTexture.Hint": "Image tiled on walls when the wall look is \"Wall texture\". Individual walls can override it in their configuration sheet.",
+  "F3D.Settings.DoorTexture.Name": "Door texture",
+  "F3D.Settings.DoorTexture.Hint": "Optional image tiled on doors (in any wall look). Empty: doors follow the wall look.",
+  "F3D.Settings.WallTextureScale.Name": "Wall texture size (squares)",
+  "F3D.Settings.WallTextureScale.Hint": "How many grid squares one repeat of the wall/door texture covers.",
+  "F3D.WallConfig.Texture": "3D texture",
+  "F3D.WallConfig.TextureHint": "Foundry 3D View: image tiled on this wall (or door) in the 3D view. Empty uses the module setting."
 }

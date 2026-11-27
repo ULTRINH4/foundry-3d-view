@@ -33,5 +33,18 @@
   "F3D.Notify.Blocked": "Uma parede bloqueia esse movimento.",
   "F3D.Notify.DoorLocked": "Esta porta está trancada.",
   "F3D.Settings.Fog3d.Name": "Névoa de guerra no 3D",
-  "F3D.Settings.Fog3d.Hint": "Jogadores só veem os quadrados que seus tokens enxergam (quadrados explorados ficam escurecidos). Usa a opção de visão de tokens da cena."
+  "F3D.Settings.Fog3d.Hint": "Jogadores só veem os quadrados que seus tokens enxergam (quadrados explorados ficam escurecidos). Usa a opção de visão de tokens da cena.",
+  "F3D.Settings.WallMode.Name": "Aparência das paredes no 3D",
+  "F3D.Settings.WallMode.Hint": "Herdar do mapa: o topo das paredes mostra o mapa e as faces usam as cores da parede desenhada no mapa. Textura: repete a textura de parede abaixo. Lisa: cinza simples.",
+  "F3D.Settings.WallMode.Map": "Herdar do mapa",
+  "F3D.Settings.WallMode.Texture": "Textura de parede",
+  "F3D.Settings.WallMode.Flat": "Cor lisa",
+  "F3D.Settings.WallTexture.Name": "Textura das paredes",
+  "F3D.Settings.WallTexture.Hint": "Imagem repetida nas paredes quando a aparência é \"Textura de parede\". Cada parede pode ter a sua na janela de configuração da parede.",
+  "F3D.Settings.DoorTexture.Name": "Textura das portas",
+  "F3D.Settings.DoorTexture.Hint": "Imagem opcional repetida nas portas (em qualquer aparência). Vazio: as portas seguem a aparência das paredes.",
+  "F3D.Settings.WallTextureScale.Name": "Tamanho da textura (quadrados)",
+  "F3D.Settings.WallTextureScale.Hint": "Quantos quadrados da grade uma repetição da textura de parede/porta cobre.",
+  "F3D.WallConfig.Texture": "Textura 3D",
+  "F3D.WallConfig.TextureHint": "Foundry 3D View: imagem repetida nesta parede (ou porta) na visão 3D. Vazio usa a configuração do módulo."
 }

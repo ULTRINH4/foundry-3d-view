@@ -26,6 +26,8 @@ const port = 8174;
 const server = await startServer(port);
 const shots = [
   ["dev-page-orbit.png", ""],
+  ["dev-page-walls-texture.png", "?walls=texture&cutaway=1&az=-20"],
+  ["dev-page-walls-map.png", "?walls=map&cutaway=1&az=-20"],
   ["dev-page-topdown.png", "?topdown=1"],
   ["dev-page-player.png", "?player=1&az=-70"],
   ["dev-page-paint.png", "?paint=1&az=150"],

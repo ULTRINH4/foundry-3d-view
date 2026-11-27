@@ -57,7 +57,7 @@ async function run() {
   const isGM = game.user.isGM;
 
   // Registration
-  r.settingsRegistered = ["wallHeight", "heightStep", "showGrid", "fog3d", "cutaway", "showRoofs", "windowed"]
+  r.settingsRegistered = ["wallHeight", "heightStep", "showGrid", "fog3d", "cutaway", "showRoofs", "windowed", "wallMode", "wallTexture", "doorTexture", "wallTextureScale"]
     .every((k) => env.settings.has(`foundry-3d-view.${k}`));
   r.keybindingRegistered = !!game.keybindings.registry["foundry-3d-view.toggle"];
   const controlsV13 = { tokens: { name: "tokens", tools: {} } };
@@ -79,6 +79,16 @@ async function run() {
   r.viewBuilt = !!view && view.walls.size > 0 && view.tokens.size === 6 && view.tiles.size === 2;
   r.lightsLoaded = view.lights.length === 4; // 3 ambient + hero torch
   r.darknessApplied = Math.abs(view.darkness - json.darkness) < 1e-6;
+
+  // Wall look follows the module settings; a wall flag overrides it
+  r.wallsInheritMapByDefault = view.wallMaterialKeyOf("w1") === "map";
+  await game.settings.set("foundry-3d-view", "wallTexture", "textures/stone.webp");
+  await game.settings.set("foundry-3d-view", "wallMode", "texture");
+  r.wallModeSettingApplies = view.wallMaterialKeyOf("w1") === "tex:textures/stone.webp";
+  await canvas.scene.walls.get("w2").update({ flags: { "foundry-3d-view": { texture: "textures/brick.webp" } } });
+  r.wallFlagOverrides = view.wallMaterialKeyOf("w2") === "tex:textures/brick.webp";
+  await game.settings.set("foundry-3d-view", "wallMode", "map");
+  r.wallFlagSurvivesModeChange = view.wallMaterialKeyOf("w2") === "tex:textures/brick.webp" && view.wallMaterialKeyOf("w1") === "map";
 
   // Door updates through the document
   const door = canvas.scene.walls.get("w15");

@@ -203,7 +203,9 @@ export async function bootMockFoundry({ art }) {
         return settings.get(`${mod}.${key}`)?.value;
       },
       set: async (mod, key, v) => {
-        settings.get(`${mod}.${key}`).value = v;
+        const entry = settings.get(`${mod}.${key}`);
+        entry.value = v;
+        entry.cfg.onChange?.(v);
         return v;
       },
       registry: settings,

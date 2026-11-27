@@ -165,3 +165,39 @@ export function drawRoof() {
   ctx.fillRect(156, 0, 8, 320);
   return cv;
 }
+
+/** Tileable stone-brick wall texture (one tile = one square). */
+export function drawBricks() {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 128;
+  const ctx = cv.getContext("2d");
+  const rand = rng(3);
+  ctx.fillStyle = "#3b3530";
+  ctx.fillRect(0, 0, 128, 128);
+  for (let r = 0; r < 8; r++) {
+    for (let c = -1; c < 4; c++) {
+      const x = c * 40 + (r % 2) * 20, y = r * 16;
+      ctx.fillStyle = `hsl(${20 + rand() * 15}, ${18 + rand() * 12}%, ${34 + rand() * 14}%)`;
+      ctx.fillRect(x + 1, y + 1, 38, 14);
+      ctx.fillStyle = "rgba(255,255,255,0.08)";
+      ctx.fillRect(x + 1, y + 1, 38, 2);
+    }
+  }
+  return cv;
+}
+
+/** Tileable wooden planks for doors. */
+export function drawPlanks() {
+  const cv = document.createElement("canvas");
+  cv.width = cv.height = 128;
+  const ctx = cv.getContext("2d");
+  const rand = rng(9);
+  for (let i = 0; i < 8; i++) {
+    ctx.fillStyle = `hsl(28, ${40 + rand() * 15}%, ${26 + rand() * 10}%)`;
+    ctx.fillRect(i * 16, 0, 15, 128);
+  }
+  ctx.fillStyle = "#1a1a1a";
+  ctx.fillRect(0, 30, 128, 6);
+  ctx.fillRect(0, 92, 128, 6);
+  return cv;
+}

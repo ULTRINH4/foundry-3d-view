@@ -2,6 +2,7 @@ import { describe, it, expect } from "vitest";
 import { makeGrid } from "../scripts/core/coords.mjs";
 import {
   wallData, wallBox, doorPose, doorFreeEnd, isRenderableWall, showAsDoor, isDoorOpen, wallVerticalExtent,
+  wallMaterialKey, WALL_MODES,
 } from "../scripts/core/walls.mjs";
 import { DOOR_STATE, WALL_DOOR, WALL_SENSE } from "../scripts/core/constants.mjs";
 
@@ -89,5 +90,37 @@ describe("isRenderableWall", () => {
     expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE }))).toBe(false);
     expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE, door: 1 }))).toBe(true);
     expect(isRenderableWall(wallData({ c: [5, 5, 5, 5] }))).toBe(false);
+  });
+});
+
+describe("wallMaterialKey", () => {
+  const plain = wallData({ c: [0, 0, 1, 0] });
+  const custom = wallData({ c: [0, 0, 1, 0], flags: { "foundry-3d-view": { texture: "brick.webp" } } });
+  const door = wallData({ c: [0, 0, 1, 0], door: WALL_DOOR.DOOR });
+  const secret = wallData({ c: [0, 0, 1, 0], door: WALL_DOOR.SECRET });
+
+  it("reads the per-wall texture flag", () => {
+    expect(custom.texture).toBe("brick.webp");
+    expect(plain.texture).toBeNull();
+  });
+  it("map mode inherits the scene image, falls back to flat without one", () => {
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.MAP })).toBe("map");
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.MAP, hasMap: false })).toBe("flat");
+    expect(wallMaterialKey(door, { mode: WALL_MODES.MAP, asDoor: true })).toBe("map");
+  });
+  it("texture mode uses the global texture, flat without one", () => {
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.TEXTURE, wallTexture: "stone.png" })).toBe("tex:stone.png");
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.TEXTURE })).toBe("flat");
+  });
+  it("per-wall texture wins, door texture applies to doors only", () => {
+    expect(wallMaterialKey(custom, { mode: WALL_MODES.FLAT })).toBe("tex:brick.webp");
+    expect(wallMaterialKey(door, { mode: WALL_MODES.FLAT, doorTexture: "wood.png", asDoor: true })).toBe("tex:wood.png");
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.FLAT, doorTexture: "wood.png" })).toBe("flat");
+    expect(wallMaterialKey(door, { mode: WALL_MODES.FLAT, asDoor: true })).toBe("door");
+  });
+  it("secret doors seen as doors keep their own colour", () => {
+    expect(wallMaterialKey(secret, { mode: WALL_MODES.MAP, asDoor: true })).toBe("secretDoor");
+    // seen as a wall by players: it blends in like any wall
+    expect(wallMaterialKey(secret, { mode: WALL_MODES.MAP, asDoor: false })).toBe("map");
   });
 });

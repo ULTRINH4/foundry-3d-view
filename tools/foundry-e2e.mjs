@@ -163,6 +163,8 @@ const ids = await gm.evaluate(async () => {
   const imgs = {};
   for (const t of json.tokens) imgs[t._id] = await upload(art.drawToken({ ...t, src: `gen:${t._id}` }), `token-${t._id}.png`);
   const rug = await upload(art.drawRug(), "rug.png");
+  const bricks = await upload(art.drawBricks(), "bricks.png");
+  const planks = await upload(art.drawPlanks(), "planks.png");
   const roof = await upload(art.drawRoof(), "roof.png");
 
   // Player user
@@ -231,6 +233,9 @@ const ids = await gm.evaluate(async () => {
     secretDoor: wallAt([700, 1100, 800, 1100]), // w7: room A -> room C
     tokens: byKey,
     player: player.id,
+    bricks,
+    planks,
+    plainWall: wallAt([400, 400, 1100, 400]), // w1: room A north wall
     sceneX: dim.sceneX,
     sceneY: dim.sceneY,
   };
@@ -410,6 +415,58 @@ await sleep(3500);
 const dark = await gm.evaluate(() => game.modules.get("foundry-3d-view").api._controller.view.darkness);
 check("darkness change reaches the 3D lights", dark > 0.6, `darkness ${dark}`);
 await gm.evaluate(() => canvas.scene.update({ environment: { darknessLevel: 0.3 } }));
+
+// Wall look: default inherits the map; module settings switch to textures; the Wall config sheet
+// gets a "3D texture" field whose value overrides one wall.
+const keyOf = (id) => gm.evaluate((id) => game.modules.get("foundry-3d-view").api._controller.view.wallMaterialKeyOf(id), id);
+check("walls inherit the map by default", (await keyOf(ids.plainWall)) === "map", await keyOf(ids.plainWall));
+await gm.evaluate(async (ids) => {
+  await game.settings.set("foundry-3d-view", "wallTexture", ids.bricks);
+  await game.settings.set("foundry-3d-view", "doorTexture", ids.planks);
+  await game.settings.set("foundry-3d-view", "wallMode", "texture");
+}, ids);
+await sleep(1500);
+check("wall/door texture settings apply live", (await keyOf(ids.plainWall)) === `tex:${ids.bricks}` && (await keyOf(ids.corridorDoor)) === `tex:${ids.planks}`,
+  `${await keyOf(ids.plainWall)} / ${await keyOf(ids.corridorDoor)}`);
+check("wall texture loaded from Foundry", await gm.evaluate((src) => !!game.modules.get("foundry-3d-view").api._controller.view.wallMaterials.get(`tex:${src}`)?.map?.image, ids.bricks));
+await gm.evaluate(() => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  v.setTopDown(false);
+  v.resetCamera({ x: 1000, y: 800 });
+});
+await sleep(1500);
+await gm.screenshot({ path: join(shots, "foundry-real-walls-texture.png") });
+
+await gm.evaluate((id) => canvas.scene.walls.get(id).sheet.render(true), ids.plainWall);
+await gm.waitForSelector('[name="flags.foundry-3d-view.texture"]', { timeout: 15000 }).catch(() => {});
+const fieldInfo = await gm.evaluate(() => {
+  const el = document.querySelector('[name="flags.foundry-3d-view.texture"]');
+  return el ? el.tagName.toLowerCase() : null;
+});
+check("Wall config sheet has the 3D texture field", !!fieldInfo, String(fieldInfo));
+await gm.screenshot({ path: join(shots, "foundry-real-wall-config.png") });
+if (fieldInfo) {
+  await gm.evaluate((src) => {
+    const el = document.querySelector('[name="flags.foundry-3d-view.texture"]');
+    el.value = src;
+    const input = el.querySelector?.("input") ;
+    if (input) input.value = src;
+    el.dispatchEvent(new Event("change", { bubbles: true }));
+  }, ids.planks);
+  const form = gm.locator('[name="flags.foundry-3d-view.texture"]').locator("xpath=ancestor::form[1]");
+  await form.locator('button[type="submit"]').first().click();
+  await sleep(1500);
+  const flag = await gm.evaluate((id) => canvas.scene.walls.get(id).getFlag("foundry-3d-view", "texture"), ids.plainWall);
+  check("saving the sheet stores the wall flag", flag === ids.planks, String(flag));
+  check("per-wall texture overrides the setting in 3D", (await keyOf(ids.plainWall)) === `tex:${ids.planks}`, await keyOf(ids.plainWall));
+  await gm.evaluate((id) => canvas.scene.walls.get(id).unsetFlag("foundry-3d-view", "texture"), ids.plainWall);
+}
+await gm.evaluate(async () => {
+  await game.settings.set("foundry-3d-view", "wallMode", "map");
+  await game.settings.set("foundry-3d-view", "doorTexture", "");
+});
+await sleep(800);
+check("back to map look", (await keyOf(ids.plainWall)) === "map");
 
 check("GM sees the hidden token as a ghost", await gm.evaluate((id) => {
   const t = game.modules.get("foundry-3d-view").api._controller.view.tokens.get(id);

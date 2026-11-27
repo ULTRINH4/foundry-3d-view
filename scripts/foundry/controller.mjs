@@ -80,6 +80,8 @@ export class Tactics3DController {
       cutaway: game.settings.get(MODULE_ID, "cutaway"),
       showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
       startHidden: !game.user.isGM,
+      ...wallStyle(),
+      resolveSrc,
     });
     await this._loadScene();
     if (this.overlay !== overlay) return; // closed while loading
@@ -175,6 +177,11 @@ export class Tactics3DController {
     const tok = canvas.tokens?.controlled?.[0] ?? canvas.tokens?.placeables?.find((p) => p.isOwner && p.isVisible);
     if (!tok) return null;
     return tokenCenter(canvas.grid, tok.document);
+  }
+
+  /** Re-read the wall look settings and rebuild the walls (settings onChange). */
+  applyWallStyle() {
+    this.view?.setWallStyle(wallStyle());
   }
 
   close() {
@@ -459,6 +466,16 @@ export class Tactics3DController {
     if (!heights || !game.user.isGM || !canvas.scene) return;
     canvas.scene.update({ [`flags.${MODULE_ID}.heights`]: { cols: heights.cols, rows: heights.rows, data: heights.data } });
   }
+}
+
+/** Wall look from the module settings. */
+function wallStyle() {
+  return {
+    wallMode: game.settings.get(MODULE_ID, "wallMode"),
+    wallTexture: game.settings.get(MODULE_ID, "wallTexture"),
+    doorTexture: game.settings.get(MODULE_ID, "doorTexture"),
+    wallTextureScale: Number(game.settings.get(MODULE_ID, "wallTextureScale")) || 1,
+  };
 }
 
 function isSupportedGrid(scene) {

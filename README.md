@@ -21,6 +21,7 @@ toggle on and off.
 | Heights per square | Stored in the scene flag `flags.foundry-3d-view.heights` as `{cols, rows, data[]}`, in grid distance units (the same units as token elevation). Tokens stand on `max(terrain under the token, elevation)`. |
 | GM height tool | **Paint heights**: left-click raises a square, right-click or Shift+click lowers it. The **Brush** can be 1×1, 3×3 or 5×5. **Undo** (also Ctrl+Z) keeps 50 steps. **Auto: raise outside** / **Auto: raise rooms** make a rough first pass from the walls. **Flatten** resets everything to 0. |
 | Walls | Each wall that blocks sight becomes a box. Invisible walls are skipped. Plain walls are drawn as one instanced mesh, so there is one draw call for all of them. If a wall has `wall-height` flags (from the Wall Height module), those set its top and bottom. |
+| **Wall look** | Pick one in the module settings. **Inherit from the map** is the default: wall tops show the map exactly, and the wall faces take the colours of the wall as drawn on the battlemap. **Wall texture** tiles an image of your choice in world space, so it continues across walls without seams. **Flat** is plain grey. There is an optional **door texture**, and a **texture size** setting (squares per repeat). **Per wall:** the Wall configuration sheet gets a **3D texture** field, with Foundry's file picker, that overrides the setting for that wall or door. Walls that share a look are still drawn as one instanced mesh. |
 | Doors | Each door is its own mesh, hinged at the first point of the wall. It swings open or closed with an animation on `updateWall`. To players, a closed secret door looks like a plain wall. |
 | **Cutaway walls** | A toggle sinks the walls between the camera and the point it looks at, so you can see into rooms. Walls rise back smoothly when you turn the camera. |
 | Tokens | Token art is shown as an upright card that always faces the camera. It sits on a base coloured by disposition. Cards follow Foundry's movement animation (`refreshToken`) and lie flat in top-down view. Selected tokens get a yellow ring. |
@@ -31,7 +32,7 @@ toggle on and off.
 | **Levels (v14)** | If the scene has native levels, each upper level is a floor plane at its elevation, using the level's image (transparent parts stay see-through). Walls, tokens and tiles are assigned to a level by id or by elevation. A **Visible levels** selector hides the floors above the one you pick. *This follows the v14 data shape as far as known, and has only been checked against a mock (see below).* |
 | Camera | Orbit (left-drag), pan (right-drag), zoom (wheel), 45° rotate buttons, recenter, and a top-down toggle. |
 
-Settings: wall height (squares), height paint step (squares), fog of war in 3D (world), and show grid in 3D (per client).
+Settings: wall height (squares), wall look (inherit from the map / texture / flat), wall texture, door texture, texture size, height paint step (squares), fog of war in 3D (world), and show grid in 3D (per client).
 The cutaway, roofs and window toggles are remembered per client.
 UI text is in English and pt-BR (`lang/`).
 
@@ -59,7 +60,7 @@ Then restart Foundry, enable **Foundry 3D View** in *Manage Modules*, open a sce
 
 ## How it was tested
 
-**Real Foundry v13 (build 351): `npm run e2e`, 43 end-to-end checks, all passing.**
+**Real Foundry v13 (build 351): `npm run e2e`, 50 end-to-end checks, all passing.**
 The script `tools/foundry-e2e.mjs` drives a real Foundry server through headless Edge (playwright-core), using real mouse and keyboard input. It runs in a throwaway data folder, never in your own worlds. It:
 - creates a world;
 - enables the module (and the system's required modules);
@@ -83,6 +84,10 @@ What it covers:
   - right-click to release;
   - clicking a door to open it.
 - **GM tools:** height paint saved to the scene flag, plus undo; cutaway, saved as a client setting.
+- **Wall look:**
+  - walls inherit the map by default;
+  - the wall and door texture settings apply live, and textures uploaded to Foundry load;
+  - the Wall config sheet shows the **3D texture** field, and saving the sheet stores the flag, which overrides that wall in 3D.
 - **As a player:**
   - the Shift+V keybinding;
   - fog of war;
@@ -115,10 +120,10 @@ $env:FOUNDRY_URL="http://localhost:30013"; $env:FOUNDRY_SYSTEM="ordemparanormal"
 Foundry v13 needs Node 20 to 22 (Node 24 is refused). A portable Node 22 works.
 
 Other layers:
-1. **Unit tests** (`npm test`, 67, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
+1. **Unit tests** (`npm test`, 72, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
 2. **Dev page** (`dev/index.html`). The renderer, toolbar and interaction on a generated sample dungeon, with no Foundry needed.
 3. **Mock Foundry harness** (`dev/foundry-mock.html`). The real module runs against fake Foundry globals, as GM, as a player, and with v14-style levels.
-4. **Headless self-tests** (`npm run selftest`, 122 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
+4. **Headless self-tests** (`npm run selftest`, 140 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
 
 ### Still unverified
 - **Foundry v14.** I have only checked levels against the mock. There is a v14 installer in the owner's Downloads, but it was not installed.
@@ -147,6 +152,8 @@ Screenshots (`dev/screenshots/`):
 |---|---|
 | `dev-page-orbit.png` | GM orbit view with the roof, balcony and lights |
 | `dev-page-topdown.png` | Top-down view |
+| `dev-page-walls-texture.png` | Wall look "texture": bricks on walls, planks on doors |
+| `dev-page-walls-map.png` | Wall look "inherit from the map" |
 | `dev-page-cutaway.png` | Cutaway walls |
 | `dev-page-ruler.png` | Ruler with distance |
 | `dev-page-fog.png` | Player fog, top-down |
@@ -157,6 +164,8 @@ Screenshots (`dev/screenshots/`):
 | `foundry-real-gm.png` | **Real Foundry v13**: the GM with the 3D view open |
 | `foundry-real-ruler.png` | Real Foundry: a selected token and the hover ruler |
 | `foundry-real-cutaway.png` | Real Foundry: cutaway walls |
+| `foundry-real-walls-texture.png` | Real Foundry: textured walls |
+| `foundry-real-wall-config.png` | Real Foundry: the "3D texture" field in the Wall config sheet |
 | `foundry-real-player.png` | Real Foundry: the player view with fog |
 | `foundry-real-player-door.png` | Real Foundry: the player after opening the door from 3D |
 

@@ -5,6 +5,7 @@
  * the interaction callbacks and computes fog with the pure line-of-sight code.
  *
  * URL params: ?topdown=1  ?player=1  ?az=<deg>  ?paint=1  ?cutaway=1  ?select=<tokenId>  ?selftest=1
+ *             ?walls=map|texture|flat
  */
 import * as THREE from "../vendor/three/three.module.js";
 import { View3D } from "../scripts/render/view3d.mjs";
@@ -12,7 +13,7 @@ import { createHud } from "../scripts/ui/hud.mjs";
 import { createInteraction } from "../scripts/ui/interact.mjs";
 import { modelFromJSON } from "../scripts/core/scene-model.mjs";
 import { getHeight } from "../scripts/core/heights.mjs";
-import { drawDungeon, drawToken, drawBalcony, drawRug, drawRoof } from "./art.mjs";
+import { drawDungeon, drawToken, drawBalcony, drawRug, drawRoof, drawBricks, drawPlanks } from "./art.mjs";
 import { losVisibilityTest, visibleCells, fogStates, FOG } from "../scripts/core/vision.mjs";
 import { gridSquares, DIAGONALS, formatDistance } from "../scripts/core/scene-extras.mjs";
 import { canvasToWorld, canvasToCell, tokenCenter } from "../scripts/core/coords.mjs";
@@ -39,7 +40,16 @@ for (const tok of model.tokens) tok.src = drawToken(tok);
 
 const overlay = document.getElementById("f3d-overlay");
 let playerView = params.has("player");
-const view = new View3D(overlay.querySelector(".f3d-viewport"), { isGM: !playerView, preserveDrawingBuffer: true });
+const wallArt = { "gen:brick": drawBricks(), "gen:planks": drawPlanks() };
+const wallMode = params.get("walls") ?? "map";
+const view = new View3D(overlay.querySelector(".f3d-viewport"), {
+  isGM: !playerView,
+  preserveDrawingBuffer: true,
+  wallMode,
+  wallTexture: "gen:brick",
+  doorTexture: wallMode === "texture" ? "gen:planks" : "",
+  resolveSrc: (src) => wallArt[src] ?? src,
+});
 await view.load(model);
 
 /* --- the "Foundry" side ---------------------------------------------------------------------- */
@@ -168,6 +178,12 @@ document.getElementById("dev-move").addEventListener("click", () => {
   moveToken("hero", { col, row });
 });
 document.getElementById("dev-player").addEventListener("click", () => setPlayerView(!playerView));
+const WALL_MODES_CYCLE = ["map", "texture", "flat"];
+document.getElementById("dev-walls").addEventListener("click", () => {
+  const next = WALL_MODES_CYCLE[(WALL_MODES_CYCLE.indexOf(view.options.wallMode) + 1) % 3];
+  view.setWallStyle({ wallMode: next, doorTexture: next === "texture" ? "gen:planks" : "" });
+  document.getElementById("dev-status").textContent = `Walls: ${next}`;
+});
 document.getElementById("dev-dark").addEventListener("click", () => {
   model.darkness = model.darkness > 0.5 ? 0 : 0.8;
   view.setLights(model.lights, model.darkness);
@@ -283,6 +299,22 @@ async function runSelfTest() {
   // 8. lights and darkness
   view._updateLights();
   r.lightsActive = view.lightPool.filter((l) => l.intensity > 0).length >= 3;
+
+  // 8b. wall looks: map (default) -> texture (+ per-wall override) -> flat
+  r.wallsInheritMap = view.wallMaterialKeyOf("w1") === "map";
+  view.setWallStyle({ wallMode: "texture", doorTexture: "gen:planks" });
+  r.wallsTextured = view.wallMaterialKeyOf("w1") === "tex:gen:brick" && view.wallMaterialKeyOf("w15") === "tex:gen:planks";
+  const w2 = model.walls.find((w) => w.id === "w2");
+  view.upsertWall({ ...w2, texture: "gen:planks" });
+  r.perWallTexture = view.wallMaterialKeyOf("w2") === "tex:gen:planks" && view.wallMaterialKeyOf("w1") === "tex:gen:brick";
+  await new Promise((ok) => setTimeout(ok, 50));
+  frames(2);
+  r.wallTextureLoaded = !!view.wallMaterials.get("tex:gen:brick")?.map;
+  view.upsertWall({ ...w2 });
+  view.setWallStyle({ wallMode: "flat", doorTexture: "" });
+  r.wallsFlat = view.wallMaterialKeyOf("w1") === "flat" && view.wallMaterialKeyOf("w15") === "door";
+  view.setWallStyle({ wallMode: "map" });
+  r.wallsBackToMap = view.wallMaterialKeyOf("w1") === "map" && [...view.walls.values()].filter((w) => w.instanced).length > 20;
 
   // 9. player view: fog + vision
   setPlayerView(true);
