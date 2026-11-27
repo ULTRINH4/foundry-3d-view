@@ -43,6 +43,7 @@ const DEFAULTS = {
   cameraMode: "free", // "free" (perspective orbit) or "tactics" (orthographic, fixed angle, 90° turns)
   spriteFacing: "camera", // see SPRITE_FACING
   tacticsElevation: 30, // degrees above the ground for the tactics camera
+  portraits: false, // Fire Emblem-style portrait diamond above each standee
   wallTexture: "",
   doorTexture: "",
   wallTextureScale: 1, // squares covered by one repeat of a wall texture
@@ -208,6 +209,8 @@ export class View3D {
     this.controls.screenSpacePanning = false; // pan across the ground plane
     this.controls.maxPolarAngle = THREE.MathUtils.degToRad(85);
     this.controls.minDistance = 2;
+    this.controls.zoomSpeed = 1.15;
+    this.controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
 
     this.hemi = new THREE.HemisphereLight(0xffffff, 0x404050, 1.6);
     this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
@@ -787,6 +790,111 @@ export class View3D {
   }
 
   /* ---------------------------------------------------------------------------------------- */
+  /* Fire Emblem-style movement overlays                                                      */
+  /* ---------------------------------------------------------------------------------------- */
+
+  _cellWorld(col, row, lift = 0.03) {
+    const g = this.grid;
+    const w = canvasToWorld(g, g.sceneX + (col + 0.5) * g.size, g.sceneY + (row + 0.5) * g.size);
+    return new THREE.Vector3(w.x, unitsToWorldY(g, getHeight(this.heights, col, row)) + lift, w.z);
+  }
+
+  _rangeMesh(color, opacity) {
+    const n = this.grid.cols * this.grid.rows;
+    const mat = new THREE.MeshBasicMaterial({ color, transparent: true, opacity, depthWrite: false, side: THREE.DoubleSide });
+    const mesh = new THREE.InstancedMesh(this.planeGeometry, mat, n);
+    mesh.count = 0;
+    mesh.renderOrder = 5;
+    mesh.frustumCulled = false;
+    this.overlayGroup.add(mesh);
+    return mesh;
+  }
+
+  /**
+   * Blue squares the selected unit can reach and red squares it can attack.
+   * @param {Iterable<number>} move    cell keys (row * cols + col)
+   * @param {Iterable<number>} attack  cell keys
+   */
+  showMoveRange(move, attack = []) {
+    if (!this.grid) return;
+    this.moveMesh ??= this._rangeMesh(0x2f6bff, 0.42);
+    this.attackMesh ??= this._rangeMesh(0xff3434, 0.38);
+    const fill = (mesh, keys) => {
+      let i = 0;
+      for (const k of keys) {
+        const c = k % this.grid.cols, r = Math.floor(k / this.grid.cols);
+        _m.compose(this._cellWorld(c, r, 0.025), _q.identity(), _s.set(0.94, 1, 0.94));
+        mesh.setMatrixAt(i++, _m);
+      }
+      mesh.count = i;
+      mesh.instanceMatrix.needsUpdate = true;
+      mesh.visible = i > 0;
+    };
+    fill(this.moveMesh, move);
+    fill(this.attackMesh, attack);
+    this.moveRangeKeys = new Set(move);
+  }
+
+  clearMoveRange() {
+    if (this.moveMesh) this.moveMesh.visible = false;
+    if (this.attackMesh) this.attackMesh.visible = false;
+    this.moveRangeKeys = null;
+    this.showPath(null);
+  }
+
+  /** Yellow arrow along a path of squares ({col,row} list, start first); null hides it. */
+  showPath(cells) {
+    if (this.pathMesh) {
+      this.pathMesh.removeFromParent();
+      this.pathMesh.geometry.dispose();
+      this.pathMesh = null;
+    }
+    if (!cells || cells.length < 2 || !this.grid) return;
+    const pts = cells.map((c) => this._cellWorld(c.col, c.row, 0.08));
+    const half = 0.11, head = 0.3, headLen = 0.42;
+    const pos = [];
+    const quad = (a, b, c, d) => pos.push(...a, ...b, ...c, ...a, ...c, ...d);
+    for (let i = 0; i < pts.length - 1; i++) {
+      const a = pts[i], b = pts[i + 1].clone();
+      const dir = b.clone().sub(a);
+      dir.y = 0;
+      const len = dir.length();
+      dir.normalize();
+      const n = new THREE.Vector3(-dir.z, 0, dir.x).multiplyScalar(half);
+      const last = i === pts.length - 2;
+      if (last) b.sub(dir.clone().multiplyScalar(Math.min(headLen, len * 0.8)));
+      const a0 = i === 0 ? a : a.clone().sub(dir.clone().multiplyScalar(half)); // overlap joints
+      quad(a0.clone().add(n).toArray(), a0.clone().sub(n).toArray(), b.clone().sub(n).toArray(), b.clone().add(n).toArray());
+      if (last) {
+        const tip = pts[i + 1];
+        const hn = n.clone().normalize().multiplyScalar(head);
+        pos.push(...b.clone().add(hn).toArray(), ...b.clone().sub(hn).toArray(), ...tip.toArray());
+      }
+    }
+    const geo = new THREE.BufferGeometry();
+    geo.setAttribute("position", new THREE.Float32BufferAttribute(pos, 3));
+    const mat = new THREE.MeshBasicMaterial({ color: 0xffd23f, transparent: true, opacity: 0.95, depthTest: false, side: THREE.DoubleSide });
+    this.pathMesh = new THREE.Mesh(geo, mat);
+    this.pathMesh.renderOrder = 9;
+    this.overlayGroup.add(this.pathMesh);
+  }
+
+  /** Grid cursor (pulsing square frame), or null to hide. */
+  setCursor(cell) {
+    if (!this.cursorMesh) {
+      const shape = new THREE.Shape([new THREE.Vector2(-0.5, -0.5), new THREE.Vector2(0.5, -0.5), new THREE.Vector2(0.5, 0.5), new THREE.Vector2(-0.5, 0.5)]);
+      shape.holes.push(new THREE.Path([new THREE.Vector2(-0.41, -0.41), new THREE.Vector2(-0.41, 0.41), new THREE.Vector2(0.41, 0.41), new THREE.Vector2(0.41, -0.41)]));
+      const geo = new THREE.ShapeGeometry(shape).rotateX(-Math.PI / 2);
+      this.cursorMesh = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: 0xfff1b0, transparent: true, opacity: 0.95, depthTest: false, side: THREE.DoubleSide }));
+      this.cursorMesh.renderOrder = 10;
+      this.overlayGroup.add(this.cursorMesh);
+    }
+    this.cursorCell = cell ?? null;
+    this.cursorMesh.visible = !!cell;
+    if (cell) this.cursorMesh.position.copy(this._cellWorld(cell.col, cell.row, 0.1));
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
   /* Mirrored canvas effects (combat animations)                                              */
   /* ---------------------------------------------------------------------------------------- */
 
@@ -998,6 +1106,7 @@ export class View3D {
     }
     entry.card.material.map = tex;
     entry.card.material.color.set(tex ? 0xffffff : 0x999999);
+    this._updatePortrait(entry, entry.data.sheet ? null : tex);
     entry.card.material.needsUpdate = true;
     entry.textureApplied = true;
     this._sizeCard(entry);
@@ -1015,6 +1124,32 @@ export class View3D {
     const r = Math.max(t.width, t.height) * 0.45;
     entry.base.scale.set(r / 0.45, 1, r / 0.45);
     entry.ring.scale.set(r / 0.45, 1, r / 0.45);
+    if (entry.portrait) {
+      const ps = 0.55 * Math.max(t.width, t.height);
+      entry.portrait.scale.set(ps, ps, 1);
+      entry.portrait.position.set(0, Math.abs(entry.card.scale.y) + 0.45, 0);
+    }
+  }
+
+  /** Fire Emblem-style portrait diamond floating above the standee (option). */
+  _updatePortrait(entry, tex) {
+    if (!entry.portrait) {
+      const mat = new THREE.SpriteMaterial({ transparent: true, depthTest: false, rotation: 0 });
+      entry.portrait = new THREE.Sprite(mat);
+      entry.portrait.renderOrder = 7;
+      entry.group.add(entry.portrait);
+    }
+    if (tex) {
+      entry.portrait.material.map = tex;
+      entry.portrait.material.needsUpdate = true;
+    }
+    entry.portrait.visible = !!this.options.portraits && !!entry.portrait.material.map;
+  }
+
+  /** Show/hide the portrait diamonds. */
+  setPortraits(on) {
+    this.options.portraits = !!on;
+    for (const [, t] of this.tokens) if (t.portrait) t.portrait.visible = !!on && !!t.portrait.material.map;
   }
 
   /** Compute the world target position of a token from its data and the terrain. */
@@ -1027,8 +1162,68 @@ export class View3D {
     const footUnits = Math.max(terrain, t.elevation ?? 0);
     const w = canvasToWorld(g, c.x, c.y);
     entry.target.set(w.x, unitsToWorldY(g, footUnits), w.z);
-    if (snap) entry.group.position.copy(entry.target);
+    entry.snapY = !!snap;
+    if (snap) {
+      entry.group.position.copy(entry.target);
+      entry.hop = null;
+      entry.queue = null;
+    }
+    // Clear the snap flag next frame so later height changes hop.
+    if (snap) requestAnimationFrame(() => (entry.snapY = false));
     this._sizeCard(entry);
+  }
+
+  /**
+   * Move a standee: walks queued waypoints square by square at a steady pace (Fire Emblem
+   * style) and hops when the ground height changes; otherwise eases toward its target.
+   */
+  _stepToken(t, dt, k) {
+    const pos = t.group.position;
+    if (t.queue?.length) {
+      const next = t.queue[0];
+      const g = this.grid;
+      const c = canvasToWorld(g, next.x + (t.data.width * g.size) / 2, next.y + (t.data.height * g.size) / 2);
+      const dx = c.x - pos.x, dz = c.z - pos.z;
+      const dist = Math.hypot(dx, dz);
+      const stepLen = dt * 6; // squares per second
+      if (dist <= stepLen) {
+        t.data = { ...t.data, x: next.x, y: next.y };
+        t.queue.shift();
+        this._placeToken(t, false);
+        pos.x = c.x;
+        pos.z = c.z;
+      } else {
+        pos.x += (dx / dist) * stepLen;
+        pos.z += (dz / dist) * stepLen;
+      }
+    } else {
+      pos.x += (t.target.x - pos.x) * k;
+      pos.z += (t.target.z - pos.z) * k;
+    }
+    // Vertical: hop over height changes, otherwise ease.
+    const goalY = t.target.y;
+    if (t.hop) {
+      t.hop.t = Math.min(1, t.hop.t + dt / 0.28);
+      const e = t.hop.t;
+      pos.y = t.hop.from + (t.hop.to - t.hop.from) * e + Math.sin(Math.PI * e) * 0.4;
+      if (e >= 1) t.hop = null;
+    } else if (Math.abs(goalY - pos.y) > 0.05 && !t.snapY) {
+      t.hop = { from: pos.y, to: goalY, t: 0 };
+    } else {
+      pos.y += (goalY - pos.y) * k;
+    }
+    if (t.hop && Math.abs(t.hop.to - goalY) > 1e-6) t.hop.to = goalY;
+  }
+
+  /**
+   * Walk a token along a path of squares ({col,row} list, start first). The token's data ends
+   * on the last square. Used by the dev page; in Foundry the movement animation drives it.
+   */
+  moveTokenAlong(id, cells) {
+    const entry = this.tokens.get(id);
+    if (!entry || !cells?.length) return;
+    const g = this.grid;
+    entry.queue = cells.slice(1).map((c) => ({ x: g.sceneX + c.col * g.size, y: g.sceneY + c.row * g.size }));
   }
 
   /** Live position update (canvas px top-left, like Foundry token x/y). */
@@ -1433,9 +1628,12 @@ export class View3D {
       this.controls.enableRotate = false;
       this.controls.minZoom = 0.1;
       this.controls.maxZoom = 8;
+      // Tactics: any drag pans (no free rotation that would break the diagonal); Q/E rotate.
+      this.controls.mouseButtons = { LEFT: THREE.MOUSE.PAN, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
     } else {
       this.camera = this.perspCamera;
       this.controls.object = this.perspCamera;
+      this.controls.mouseButtons = { LEFT: THREE.MOUSE.ROTATE, MIDDLE: THREE.MOUSE.PAN, RIGHT: THREE.MOUSE.PAN };
       const d = Math.max(6, this.orthoHeight / Math.max(0.1, this.orthoCamera.zoom) / 0.7);
       this.controls.minPolarAngle = 0;
       this.controls.maxPolarAngle = THREE.MathUtils.degToRad(85);
@@ -1653,7 +1851,7 @@ export class View3D {
    * @param {{col:number,row:number}[]|null} cells  null hides it
    * @param {string} [label]
    */
-  showRuler(cells, label = "") {
+  showRuler(cells, label = "", { line = true } = {}) {
     if (!cells || cells.length < 2) {
       if (this.rulerLine) this.rulerLine.visible = false;
       this.rulerLabel.style.display = "none";
@@ -1675,7 +1873,7 @@ export class View3D {
       this.rulerLine.renderOrder = 10;
       this.overlayGroup.add(this.rulerLine);
     }
-    this.rulerLine.visible = true;
+    this.rulerLine.visible = line;
     this._rulerEnd = pts[pts.length - 1].clone().add(new THREE.Vector3(0, 0.35, 0));
     this.rulerLabel.textContent = label;
     this.rulerLabel.style.display = label ? "block" : "none";
@@ -1731,6 +1929,10 @@ export class View3D {
     } catch (e) {
       console.warn("foundry-3d-view | frame callback failed", e);
     }
+    if (this.cursorMesh?.visible) {
+      const p = 1 + 0.05 * Math.sin(this._time * 6);
+      this.cursorMesh.scale.set(p, 1, p);
+    }
     if (this.activeRing?.visible) {
       const s = 1 + 0.08 * Math.sin(this._time * 5);
       this.activeRing.scale.set(this.activeRing.userData.r * s, 1, this.activeRing.userData.r * s);
@@ -1749,7 +1951,7 @@ export class View3D {
     // Billboard: parallel to the screen (tilted back by the camera's elevation), like FFT/Doom.
     const billboardLean = Math.PI / 2 - polar;
     for (const [, t] of this.tokens) {
-      t.group.position.lerp(t.target, k);
+      this._stepToken(t, dt, k);
       const faceYaw = tokenFacingYaw(t.data.rotation);
       let l = lean, ff = f;
       if (facing === SPRITE_FACING.BILLBOARD) {

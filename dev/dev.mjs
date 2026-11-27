@@ -16,6 +16,7 @@ import { getHeight } from "../scripts/core/heights.mjs";
 import { drawDungeon, drawToken, drawBalcony, drawRug, drawRoof, drawBricks, drawPlanks, drawSpriteSheet } from "./art.mjs";
 import { losVisibilityTest, visibleCells, fogStates, FOG, computeLOS, pointInPolygon } from "../scripts/core/vision.mjs";
 import { lightLevels } from "../scripts/core/lighting.mjs";
+import { reachable, attackRing, wallBlocker, diagonalCostFor } from "../scripts/core/movement.mjs";
 import { gridSquares, DIAGONALS, formatDistance } from "../scripts/core/scene-extras.mjs";
 import { canvasToWorld, canvasToCell, tokenCenter } from "../scripts/core/coords.mjs";
 
@@ -125,12 +126,37 @@ function setPlayerView(on) {
   refreshVisibility();
 }
 
-function moveToken(id, cell) {
+function moveToken(id, cell, path = null) {
   const tok = model.tokens.find((tk) => tk.id === id);
   tok.x = model.grid.sceneX + cell.col * model.grid.size;
   tok.y = model.grid.sceneY + cell.row * model.grid.size;
-  view.moveToken(id, { x: tok.x, y: tok.y });
+  if (path && path.length > 1) view.moveTokenAlong(id, path); // walk square by square
+  else view.moveToken(id, { x: tok.x, y: tok.y });
   refreshVisibility();
+  setTimeout(() => interaction?.refresh(), 0);
+}
+
+/** Fire Emblem-style range for the dev page (same rules as in Foundry). */
+function computeRange(id) {
+  const g = model.grid;
+  const tok = model.tokens.find((tk) => tk.id === id);
+  if (!tok) return null;
+  const start = canvasToCell(g, tok.x + g.size / 2, tok.y + g.size / 2);
+  const occupied = new Set();
+  for (const o of model.tokens) {
+    if (o.id === id || o.hidden || o.disposition === tok.disposition || (o.levelIndex ?? 0) !== (tok.levelIndex ?? 0)) continue;
+    const c = canvasToCell(g, o.x + g.size / 2, o.y + g.size / 2);
+    if (c) occupied.add(c.row * g.cols + c.col);
+  }
+  const blocked = wallBlocker(model.walls.filter((w) => (w.levelIndex ?? 0) === 0), g);
+  const reach = reachable(g, start, 6, {
+    blocked,
+    heights: model.heights,
+    climbUnits: 2.5 + 1e-6,
+    diagonalCost: diagonalCostFor(DIAGONALS.ALTERNATING_1),
+    occupied,
+  });
+  return { reach, attack: attackRing(g, reach, 1, { blocked }) };
 }
 
 function toggleDoor(id) {
@@ -156,7 +182,9 @@ const hud = createHud(overlay, {
   onHeightsChanged: (h) => (model.heights = h),
 });
 
-const interaction = createInteraction(view, {
+// eslint-disable-next-line prefer-const
+let interaction = null;
+interaction = createInteraction(view, {
   isBusy: () => hud.state.painting,
   getControlled: () => [...controlled],
   canControl: (id) => !playerView || isFriendly(model.tokens.find((tk) => tk.id === id)),
@@ -164,13 +192,18 @@ const interaction = createInteraction(view, {
     if (!additive) controlled.clear();
     controlled.add(id);
     refreshVisibility();
+    interaction.refresh();
   },
   onReleaseAll: () => {
     controlled.clear();
     refreshVisibility();
+    interaction.refresh();
   },
   onMoveToken: moveToken,
   onToggleDoor: toggleDoor,
+  computeRange,
+  canMoveAnywhere: () => !playerView,
+  onBlocked: () => (document.getElementById("dev-status").textContent = "Out of range"),
   measure: (a, b) => {
     const dh = getHeight(model.heights, b.col, b.row) - getHeight(model.heights, a.col, a.row);
     return formatDistance(gridSquares(a, b, DIAGONALS.ALTERNATING_1), model.grid.distance, "ft", dh);
@@ -184,17 +217,13 @@ if (params.has("select")) {
   controlled.add(params.get("select"));
   refreshVisibility();
 }
+if (params.has("select")) interaction.refresh();
 if (params.has("hover")) {
-  // Screenshot helper: show the ruler from the selected token to a cell, e.g. ?select=hero&hover=8,7
+  // Screenshot helper: cursor + path arrow from the selected token, e.g. ?select=hero&hover=8,7
   const [col, row] = params.get("hover").split(",").map(Number);
-  const id = [...controlled][0];
-  const tok = model.tokens.find((tk) => tk.id === id);
-  if (tok) {
-    const from = canvasToCell(model.grid, tok.x + 1, tok.y + 1);
-    const { lineCells } = await import("../scripts/core/scene-extras.mjs");
-    view.highlightCell({ col, row });
-    view.showRuler(lineCells(from, { col, row }), formatDistance(gridSquares(from, { col, row }, DIAGONALS.ALTERNATING_1), 5, "ft"));
-  }
+  const { pathTo } = await import("../scripts/core/movement.mjs");
+  view.setCursor({ col, row });
+  if (interaction.range) view.showPath(pathTo(model.grid, interaction.range.reach, { col, row }));
 }
 
 /* --- dev panel (simulated hooks) ------------------------------------------------------------- */
@@ -408,6 +437,60 @@ async function runSelfTest() {
   model.darkness = 0.55;
   view.setLights(model.lights, 0.55);
   refreshVisibility();
+
+  // 8f. Fire Emblem-style movement
+  view.setTopDown(false);
+  view.resetCamera();
+  frames(5);
+  const heroTok = model.tokens.find((tk) => tk.id === "hero");
+  const heroCell0 = canvasToCell(model.grid, heroTok.x + 50, heroTok.y + 50);
+  controlled.clear();
+  controlled.add("hero");
+  interaction.refresh();
+  r.feBlueAndRedShown = view.moveMesh?.visible && view.moveMesh.count > 10 && view.attackMesh?.count > 0;
+  r.feRangeBlockedByWalls = !interaction.range.reach.has(heroCell0.row * model.grid.cols + 12); // corridor door closed / walls
+  interaction.setHovering(true);
+  const key = (code) => window.dispatchEvent(new KeyboardEvent("keydown", { code, key: code, bubbles: true }));
+  const cursorBefore = { ...(interaction.cursor ?? heroCell0) };
+  key("ArrowRight");
+  const c1 = interaction.cursor;
+  r.feKeyboardCursorMoves = !!c1 && Math.abs(c1.col - cursorBefore.col) + Math.abs(c1.row - cursorBefore.row) === 1;
+  // "up" follows the camera: rotate 180° and "up" must go the other way
+  key("ArrowUp");
+  const up1 = { ...interaction.cursor };
+  key("ArrowDown");
+  view.rotateBy(180, { animate: false });
+  key("ArrowUp");
+  const up2 = { ...interaction.cursor };
+  key("ArrowDown");
+  r.feCursorRelativeToCamera = (up1.col - c1.col) === -(up2.col - c1.col) && (up1.row - c1.row) === -(up2.row - c1.row);
+  view.rotateBy(-180, { animate: false });
+  // move the cursor two squares right of the hero and confirm with Enter
+  for (let i = 0; i < 1; i++) key("ArrowRight");
+  r.fePathArrowShown = !!view.pathMesh;
+  const target = { ...interaction.cursor };
+  key("Enter");
+  r.feEnterMovesToken = heroTok.x === model.grid.sceneX + target.col * model.grid.size && heroTok.y === model.grid.sceneY + target.row * model.grid.size;
+  const heroEntry = view.tokens.get("hero");
+  r.feWalksSquareBySquare = Array.isArray(heroEntry.queue) && heroEntry.queue.length >= 1;
+  frames(60);
+  r.feArrivesAtTarget = !heroEntry.queue?.length;
+  // players can't leave the blue squares
+  setPlayerView(true);
+  controlled.clear();
+  controlled.add("hero");
+  interaction.refresh();
+  const xBefore = heroTok.x, yBefore = heroTok.y;
+  view.setTopDown(true);
+  frames(20);
+  click(cellScreen(23, 15)); // far outside the blue squares
+  r.feOutOfRangeRefused = heroTok.x === xBefore && heroTok.y === yBefore && /Out of range/.test(document.getElementById("dev-status").textContent);
+  view.setTopDown(false);
+  setPlayerView(false);
+  controlled.clear();
+  interaction.refresh();
+  interaction.setHovering(false);
+  r.feClearedOnRelease = !view.moveMesh.visible;
 
   // 9. player view: fog + vision
   setPlayerView(true);

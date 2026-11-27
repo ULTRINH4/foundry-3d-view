@@ -45,6 +45,8 @@ export function createHud(root, o) {
     const b = el("button", `f3d-btn ${cls}`);
     b.type = "button";
     b.title = label;
+    b.dataset.tooltip = label; // Foundry's tooltip on hover
+    b.dataset.tooltipDirection = "UP";
     b.innerHTML = `<i class="${icon}"></i><span>${label}</span>`;
     b.addEventListener("click", (ev) => {
       ev.preventDefault();

@@ -29,7 +29,11 @@ export function injectTokenConfig(app, html) {
     <div class="form-group"><label>${t("F3D.TokenConfig.Frames")}</label>
       <div class="form-fields"><input type="number" name="${P}.frames" min="1" step="1" value="${esc(sheet.frames ?? 1)}"></div></div>
     <div class="form-group"><label>${t("F3D.TokenConfig.Fps")}</label>
-      <div class="form-fields"><input type="number" name="${P}.fps" min="0" step="1" value="${esc(sheet.fps ?? 8)}"></div></div>`;
+      <div class="form-fields"><input type="number" name="${P}.fps" min="0" step="1" value="${esc(sheet.fps ?? 8)}"></div></div>
+    <div class="form-group"><label>${t("F3D.TokenConfig.MoveRange")}</label>
+      <div class="form-fields"><input type="number" name="flags.${MODULE_ID}.moveRange" min="1" step="1" placeholder="${t("F3D.WallConfig.HeightDefault")}" value="${esc(doc.flags?.[MODULE_ID]?.moveRange ?? "")}"></div></div>
+    <div class="form-group"><label>${t("F3D.TokenConfig.AttackRange")}</label>
+      <div class="form-fields"><input type="number" name="flags.${MODULE_ID}.attackRange" min="0" step="1" placeholder="${t("F3D.WallConfig.HeightDefault")}" value="${esc(doc.flags?.[MODULE_ID]?.attackRange ?? "")}"></div></div>`;
   // Prefer the Appearance tab (v13/v14 TokenConfig); otherwise the end of the form body.
   const tab = root.querySelector('.tab[data-tab="appearance"]') ?? root.querySelector(".tab.active") ?? root.querySelector("form") ?? root;
   tab.appendChild(fs);

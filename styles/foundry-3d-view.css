@@ -153,3 +153,19 @@
   width: auto;
   padding: 0 8px;
 }
+
+/* Bigger, clearer toolbar buttons (names show in Foundry's tooltip on hover). */
+.f3d-hud .f3d-btn {
+  width: 36px;
+  height: 36px;
+  font-size: 16px;
+  border-radius: 6px;
+}
+.f3d-hud .f3d-group {
+  padding: 5px;
+  gap: 5px;
+}
+.f3d-labels .f3d-hud .f3d-btn {
+  height: 30px;
+  font-size: 13px;
+}

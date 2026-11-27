@@ -162,6 +162,41 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true,
   });
+  game.settings.register(MODULE_ID, "limitMovement", {
+    name: "F3D.Settings.LimitMovement.Name",
+    hint: "F3D.Settings.LimitMovement.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
+  game.settings.register(MODULE_ID, "moveRange", {
+    name: "F3D.Settings.MoveRange.Name",
+    hint: "F3D.Settings.MoveRange.Hint",
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 6,
+    range: { min: 1, max: 30, step: 1 },
+  });
+  game.settings.register(MODULE_ID, "attackRange", {
+    name: "F3D.Settings.AttackRange.Name",
+    hint: "F3D.Settings.AttackRange.Hint",
+    scope: "world",
+    config: true,
+    type: Number,
+    default: 1,
+    range: { min: 0, max: 20, step: 1 },
+  });
+  game.settings.register(MODULE_ID, "portraits", {
+    name: "F3D.Settings.Portraits.Name",
+    hint: "F3D.Settings.Portraits.Hint",
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: false,
+    onChange: (v) => controller.view?.setPortraits(v),
+  });
   game.settings.register(MODULE_ID, "cutaway", { scope: "client", config: false, type: Boolean, default: false });
   game.settings.register(MODULE_ID, "cameraMode", {
     name: "F3D.Settings.CameraMode.Name",
@@ -170,7 +205,7 @@ Hooks.once("init", () => {
     config: true,
     type: String,
     choices: { free: "F3D.Settings.CameraMode.Free", tactics: "F3D.Settings.CameraMode.Tactics" },
-    default: "free",
+    default: "tactics",
   });
   game.settings.register(MODULE_ID, "spriteFacing", {
     name: "F3D.Settings.SpriteFacing.Name",
@@ -183,7 +218,7 @@ Hooks.once("init", () => {
       billboard: "F3D.HUD.Facing.billboard",
       standee: "F3D.HUD.Facing.standee",
     },
-    default: "camera",
+    default: "billboard",
   });
   game.settings.register(MODULE_ID, "showRoofs", { scope: "client", config: false, type: Boolean, default: true });
   game.settings.register(MODULE_ID, "windowed", {

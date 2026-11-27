@@ -84,7 +84,9 @@ if (active.includes("sequencer")) {
     const target = canvas.tokens.get(ids.goblin);
     new Sequence().effect().file("modules/sequencer/samples/fire.webm").atLocation(tok).stretchTo(target).duration(6000).play();
   }, ids);
-  await sleep(1500);
+  // The first video load in a fresh browser can take a few seconds.
+  await page.waitForFunction(() => game.modules.get("foundry-3d-view").api._controller.view.effects.size > 0, null, { timeout: 10000 }).catch(() => {});
+  await sleep(500);
   const fx = await page.evaluate((ids) => {
     const v = game.modules.get("foundry-3d-view").api._controller.view;
     const list = [...v.effects.values()];

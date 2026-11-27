@@ -17,6 +17,8 @@ import { createHud } from "../ui/hud.mjs";
 import { createInteraction } from "../ui/interact.mjs";
 import { EffectsBridge } from "./effects-bridge.mjs";
 import { FoundryLightSampler } from "./light-sampler.mjs";
+import { reachable, attackRing, wallBlocker, diagonalCostFor } from "../core/movement.mjs";
+import { canvasToCell } from "../core/coords.mjs";
 
 const t = (key) => game.i18n.localize(key);
 
@@ -80,6 +82,7 @@ export class Tactics3DController {
     this.overlay = overlay;
 
     this.view = new View3D(viewport, {
+      portraits: game.settings.get(MODULE_ID, "portraits"),
       isGM: game.user.isGM,
       wallHeight: Number(game.settings.get(MODULE_ID, "wallHeight")) || 1.5,
       showGrid: game.settings.get(MODULE_ID, "showGrid"),
@@ -151,10 +154,13 @@ export class Tactics3DController {
       },
       onSelectToken: (id, additive) => canvas.tokens?.get(id)?.control({ releaseOthers: !additive }),
       onReleaseAll: () => canvas.tokens?.releaseAll(),
-      onMoveToken: (id, cell) => this._moveToken(id, cell),
+      onMoveToken: (id, cell, path) => this._moveToken(id, cell, path),
       onToggleDoor: (id) => this._toggleDoor(id),
       onTokenContext: (id) => this._openTokenHUD(id),
       measure: (from, to) => this._measure(from, to),
+      computeRange: (id) => this._computeRange(id),
+      canMoveAnywhere: () => game.user.isGM,
+      onBlocked: () => ui.notifications.warn(t("F3D.Notify.OutOfRange")),
     });
   }
 
@@ -245,7 +251,44 @@ export class Tactics3DController {
   /* Actions from the 3D view                                                                 */
   /* ---------------------------------------------------------------------------------------- */
 
-  async _moveToken(id, cell) {
+  /**
+   * Fire Emblem-style movement range of a token: blue squares it can reach (walls, closed doors,
+   * ledges and enemies block) and red squares it can attack. Null when ranges are turned off.
+   */
+  _computeRange(id) {
+    if (!game.settings.get(MODULE_ID, "limitMovement")) return null;
+    const doc = canvas.scene?.tokens.get(id);
+    if (!doc || !this.view?.grid) return null;
+    const g = this.view.grid;
+    const flags = doc.flags?.[MODULE_ID] ?? {};
+    const move = Number(flags.moveRange ?? game.settings.get(MODULE_ID, "moveRange")) || 6;
+    const atk = Number(flags.attackRange ?? game.settings.get(MODULE_ID, "attackRange"));
+    const start = canvasToCell(g, doc.x + g.size / 2, doc.y + g.size / 2);
+    if (!start) return null;
+    const occupied = new Set();
+    for (const other of canvas.scene.tokens) {
+      if (other.id === id || other.hidden || other.disposition === doc.disposition) continue;
+      const c = canvasToCell(g, other.x + g.size / 2, other.y + g.size / 2);
+      if (c) occupied.add(c.row * g.cols + c.col);
+    }
+    const walls = Array.from(canvas.scene.walls).map(wallData);
+    const step = (Number(game.settings.get(MODULE_ID, "heightStep")) || 0.5) * g.distance;
+    const blocked = wallBlocker(walls, g);
+    const reach = reachable(g, start, move, {
+      blocked,
+      heights: this.view.getHeights(),
+      climbUnits: step + 1e-6,
+      diagonalCost: diagonalCostFor(canvas.scene.grid?.diagonals ?? game.settings.get("core", "gridDiagonals")),
+      occupied,
+    });
+    return { reach, attack: attackRing(g, reach, Number.isFinite(atk) ? atk : 1, { blocked }) };
+  }
+
+  /**
+   * Move a token. With a path (list of squares from the 3D arrow) it walks square by square
+   * through Foundry's movement API (waypoints), so the 2D and 3D animations follow the path.
+   */
+  async _moveToken(id, cell, path = null) {
     const p = canvas.tokens?.get(id);
     if (!p) return;
     const doc = p.document;
@@ -254,6 +297,15 @@ export class Tactics3DController {
     const x = g.sceneX + cell.col * g.size;
     const y = g.sceneY + cell.row * g.size;
     if (x === doc.x && y === doc.y) return;
+    if (path && path.length > 1 && typeof doc.move === "function") {
+      const waypoints = path.slice(1).map((c) => ({ x: g.sceneX + c.col * g.size, y: g.sceneY + c.row * g.size }));
+      try {
+        await doc.move(waypoints);
+        return;
+      } catch (e) {
+        console.warn("foundry-3d-view | waypoint move failed, moving directly", e);
+      }
+    }
     // Respect walls for players, like dragging in 2D does.
     const dest = { x: x + (doc.width * g.size) / 2, y: y + (doc.height * g.size) / 2 };
     if (!game.user.isGM && typeof p.checkCollision === "function") {
@@ -341,6 +393,8 @@ export class Tactics3DController {
       this.view.upsertToken(token(doc));
       if ("light" in changes) this._refreshLights();
       if ("hidden" in changes) this.syncVisibility();
+      // A move changes reach (the mover's, and everyone's blockers).
+      if ("x" in changes || "y" in changes || "flags" in changes) setTimeout(() => this.interaction?.refresh(), 50);
     });
     this._on("deleteToken", (doc) => {
       if (!inScene(doc)) return;
@@ -474,7 +528,16 @@ export class Tactics3DController {
     const inv = canvas.stage.worldTransform;
     const a = inv.applyInverse({ x: rect.x, y: rect.y });
     const b = inv.applyInverse({ x: rect.x + rect.width, y: rect.y + rect.height });
-    Object.assign(el.style, { left: `${a.x}px`, top: `${a.y}px`, width: `${b.x - a.x}px`, height: `${b.y - a.y}px` });
+    // The 2D view behind is zoomed out (framed on the whole scene), and #hud scales with it:
+    // undo that scale so the HUD keeps its normal size, with some room around the standee.
+    const scale = canvas.stage.scale.x || 1;
+    const pad = Math.max(24, rect.width * 0.2);
+    const w = rect.width + pad * 2, h = rect.height + pad;
+    const origin = inv.applyInverse({ x: rect.x - pad, y: rect.y - pad / 2 });
+    Object.assign(el.style, {
+      left: `${origin.x}px`, top: `${origin.y}px`, width: `${w}px`, height: `${h}px`,
+      transform: `scale(${1 / scale})`, transformOrigin: "0 0",
+    });
     el.dataset.f3d = "1";
   }
 

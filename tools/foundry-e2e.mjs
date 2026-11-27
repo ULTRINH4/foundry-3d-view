@@ -397,6 +397,24 @@ await gm.mouse.click(pt.x, pt.y);
 await sleep(2500);
 const heroPos = await gm.evaluate((id) => ({ x: canvas.scene.tokens.get(id).x, y: canvas.scene.tokens.get(id).y }), ids.tokens.hero);
 check("click on a square moves the token in Foundry", heroPos.x === ids.sceneX + 700 && heroPos.y === ids.sceneY + 700, JSON.stringify(heroPos));
+// Right-click on the token opens Foundry's Token HUD at its normal size, around the standee.
+pt = await screenOf("token", ids.tokens.hero);
+await gm.mouse.click(pt.x, pt.y, { button: "right" });
+await sleep(800);
+const hudBox = await gm.evaluate((id) => {
+  const hud = canvas.tokens.hud;
+  const el = hud?.element instanceof HTMLElement ? hud.element : hud?.element?.[0];
+  if (!hud?.rendered || !el) return null;
+  const btn = el.querySelector(".control-icon");
+  const r = el.getBoundingClientRect(), b = btn?.getBoundingClientRect();
+  const s = game.modules.get("foundry-3d-view").api._controller.view.tokenScreenRect(id);
+  return { w: r.width, h: r.height, btn: b ? Math.round(b.width) : 0, left: r.left, top: r.top, sx: s.x, sy: s.y, sw: s.width };
+}, ids.tokens.hero);
+check("Token HUD opens at normal size around the standee",
+  !!hudBox && hudBox.btn >= 30 && hudBox.left <= hudBox.sx && hudBox.left + hudBox.w >= hudBox.sx + hudBox.sw, JSON.stringify(hudBox));
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-token-hud.png`) });
+await gm.evaluate(() => canvas.tokens.hud.close());
+await sleep(300);
 // Right-click an empty square to release (right-click on a token opens Foundry's Token HUD).
 pt = await screenOf("cell", { col: 3, row: 6 });
 await gm.mouse.click(pt.x, pt.y, { button: "right" });
@@ -719,8 +737,7 @@ const pausedRefused = await pl.evaluate(async (ids) => {
 }, ids);
 check("player: actions refused while the game is paused", pausedRefused === true, String(pausedRefused));
 await gm.evaluate(() => game.togglePause(false, { broadcast: true }));
-await sleep(1000);
-check("game unpaused by the GM", await pl.evaluate(() => !game.paused));
+check("game unpaused by the GM", await pl.waitForFunction(() => !game.paused, null, { timeout: 8000 }).then(() => true, () => false));
 
 // Player tries to walk through a wall -> refused; a free move works; opens an unlocked door -> allowed
 const plMove = await pl.evaluate(async (ids) => {
@@ -743,6 +760,64 @@ const plMove = await pl.evaluate(async (ids) => {
 }, ids);
 check("player: move through a wall is refused (wall warning)", plMove.blocked);
 check("player: free move from 3D works", plMove.moved);
+
+// Fire Emblem-style movement: blue/red squares, keyboard cursor, walk along a path, out of range refused
+const fe = await pl.evaluate(async (ids) => {
+  const c = game.modules.get("foundry-3d-view").api._controller;
+  const it = c.interaction, v = c.view;
+  const doc = canvas.scene.tokens.get(ids.tokens.hero);
+  canvas.tokens.get(ids.tokens.hero).control({ releaseOthers: true });
+  await new Promise((r) => setTimeout(r, 300));
+  it.refresh();
+  const out = { blue: v.moveMesh?.visible ? v.moveMesh.count : 0, red: v.attackMesh?.count ?? 0 };
+  out.wallBlocks = !it.range?.reach?.has(12 * v.grid.cols + 7); // south of room A's wall
+  it.setHovering(true);
+  // Dispatched on the body like a real key press (window capture runs before Foundry's handler).
+  const key = (code) => document.body.dispatchEvent(new KeyboardEvent("keydown", { code, key: code, bubbles: true, cancelable: true }));
+  key("ArrowLeft");
+  const c0 = { ...it.cursor };
+  key("ArrowLeft");
+  const c1 = { ...it.cursor };
+  out.cursorMoves = Math.abs(c1.col - c0.col) + Math.abs(c1.row - c0.row) === 1;
+  out.path = !!v.pathMesh?.visible;
+  const target = { ...it.cursor };
+  const start = { x: doc.x, y: doc.y };
+  const moves = [];
+  const hook = Hooks.on("updateToken", (d, ch) => { if (d.id === doc.id && ("x" in ch || "y" in ch)) moves.push([ch.x ?? d.x, ch.y ?? d.y]); });
+  key("Enter");
+  await new Promise((r) => setTimeout(r, 3500));
+  Hooks.off("updateToken", hook);
+  const g = canvas.dimensions;
+  out.arrived = doc.x === g.sceneX + target.col * g.size && doc.y === g.sceneY + target.row * g.size;
+  out.movedFrom = start;
+  out.target = target;
+  // Far away square: refused with a warning
+  const warned = [];
+  const orig = ui.notifications.warn.bind(ui.notifications);
+  ui.notifications.warn = (m, o) => { warned.push(m); return orig(m, o); };
+  for (let i = 0; i < 14; i++) key("ArrowDown");
+  for (let i = 0; i < 14; i++) key("ArrowRight");
+  const before = { x: doc.x, y: doc.y };
+  key("Enter");
+  await new Promise((r) => setTimeout(r, 1200));
+  ui.notifications.warn = orig;
+  out.farRefused = doc.x === before.x && doc.y === before.y && warned.length > 0;
+  out.ctlBeforeEsc = canvas.tokens.controlled.length;
+  key("Escape");
+  await new Promise((r) => setTimeout(r, 300));
+  out.cleared = !v.moveMesh?.visible;
+  out.menuOpened = !!ui.menu?.rendered;
+  if (out.menuOpened) ui.menu.close();
+  it.setHovering(false);
+  return out;
+}, ids);
+check("FE: selecting a token shows blue and red squares", fe.blue > 5 && fe.red > 0, JSON.stringify(fe));
+check("FE: walls limit the blue squares", fe.wallBlocks);
+check("FE: keyboard cursor moves one square", fe.cursorMoves);
+check("FE: yellow path arrow to the cursor", fe.path);
+check("FE: Enter walks the token to the cursor", fe.arrived, JSON.stringify(fe.target));
+check("FE: player can't move out of range", fe.farRefused);
+check("FE: Esc clears the range (and Foundry's menu stays closed)", fe.cleared && !fe.menuOpened, `controlled ${fe.ctlBeforeEsc}`);
 check("player: can open an unlocked door from 3D", plMove.door === 1, `ds ${plMove.door}`);
 await sleep(2500);
 // The mage in the corridor now sees into room B

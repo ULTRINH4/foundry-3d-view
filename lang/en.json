@@ -119,5 +119,16 @@
   "F3D.Models.bench": "Bench",
   "F3D.Models.car": "Car",
   "F3D.Models.pillar": "Pillar",
-  "F3D.Models.lamppost": "Lamp post"
+  "F3D.Models.lamppost": "Lamp post",
+  "F3D.Notify.OutOfRange": "That square is out of this token's movement range.",
+  "F3D.Settings.LimitMovement.Name": "Movement range in 3D (Fire Emblem style)",
+  "F3D.Settings.LimitMovement.Hint": "Selecting a token shows the squares it can reach (blue) and attack (red); players can only move inside the blue squares. Walls, closed doors, ledges and enemies block. The GM can move anywhere.",
+  "F3D.Settings.MoveRange.Name": "Default movement range (squares)",
+  "F3D.Settings.MoveRange.Hint": "How far a token can move in one go, unless its Token config sets its own value.",
+  "F3D.Settings.AttackRange.Name": "Default attack range (squares)",
+  "F3D.Settings.AttackRange.Hint": "Width of the red band around the blue squares (1 = melee). Tokens can set their own.",
+  "F3D.Settings.Portraits.Name": "Portraits above tokens",
+  "F3D.Settings.Portraits.Hint": "Fire Emblem-style portrait of the token floating above its standee.",
+  "F3D.TokenConfig.MoveRange": "Movement range (squares)",
+  "F3D.TokenConfig.AttackRange": "Attack range (squares)"
 }
