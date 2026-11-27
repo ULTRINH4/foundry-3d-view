@@ -76,5 +76,22 @@
   "F3D.WallTools.Preset.tall": "1.5 squares",
   "F3D.WallTools.Preset.half": "Half wall (0.5)",
   "F3D.WallTools.Preset.low": "Low wall (0.25)",
-  "F3D.WallTools.Preset.custom": "Custom"
+  "F3D.WallTools.Preset.custom": "Custom",
+  "F3D.HUD.Tactics": "Tactics camera",
+  "F3D.HUD.Sprites": "Sprites",
+  "F3D.HUD.Facing.camera": "Standee (turns to camera)",
+  "F3D.HUD.Facing.billboard": "Billboard (FFT / Doom)",
+  "F3D.HUD.Facing.standee": "Fixed (token rotation)",
+  "F3D.Settings.CameraMode.Name": "3D camera",
+  "F3D.Settings.CameraMode.Hint": "Free: perspective camera you can orbit freely. Tactics: Final Fantasy Tactics style orthographic camera at a fixed angle on a diagonal, rotated in 90° steps (buttons or Q/E). Also a toggle in the 3D toolbar.",
+  "F3D.Settings.CameraMode.Free": "Free (perspective)",
+  "F3D.Settings.CameraMode.Tactics": "Tactics (FFT style)",
+  "F3D.Settings.SpriteFacing.Name": "Token sprites",
+  "F3D.Settings.SpriteFacing.Hint": "Standee: upright card turned toward the camera. Billboard: always parallel to the screen, like FFT/Doom sprites. Fixed: a paper standee that follows the token's rotation.",
+  "F3D.TokenConfig.Legend": "Foundry 3D View: sprite sheet",
+  "F3D.TokenConfig.Hint": "Optional image used in 3D instead of the token art. Rows = view directions (4: front, left, back, right; 8: front, front-left, left, back-left, back, back-right, right, front-right), columns = animation frames. The token's rotation is its facing (0 = facing down the map).",
+  "F3D.TokenConfig.Sheet": "Sprite sheet",
+  "F3D.TokenConfig.Directions": "Directions (rows)",
+  "F3D.TokenConfig.Frames": "Animation frames (columns)",
+  "F3D.TokenConfig.Fps": "Frames per second"
 }

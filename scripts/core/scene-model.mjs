@@ -20,6 +20,7 @@ import { makeGrid } from "./coords.mjs";
 import { normalizeHeightMap } from "./heights.mjs";
 import { wallData } from "./walls.mjs";
 import { MODULE_ID } from "./constants.mjs";
+import { sheetData } from "./sprites.mjs";
 import { tileData, lightData, tokenLightData, levelsFromScene, levelIndexFor, hasNativeLevels } from "./scene-extras.mjs";
 
 /** Normalize a token document (or plain object) to what the renderer needs. */
@@ -39,6 +40,9 @@ export function tokenData(doc) {
     mirrorX: Number(tex.scaleX ?? 1) < 0,
     hidden: !!doc.hidden,
     disposition: Number(doc.disposition ?? 0),
+    rotation: Number(doc.rotation) || 0,
+    // Optional directional / animated sprite sheet (Token config, Foundry 3D View fields).
+    sheet: sheetData(doc.flags?.[MODULE_ID]?.sheet),
   };
 }
 

@@ -16,6 +16,9 @@ import {
 import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
 import { FOG } from "../core/vision.mjs";
 import {
+  SPRITE_FACING, tokenFacingYaw, directionRow, animationColumn, sheetCellUV, snapTacticsYaw,
+} from "../core/sprites.mjs";
+import {
   isWallTowardCamera, selectLights, ambientForDarkness, isOverheadTile, tilePlacement, tileContainsPoint, levelFloorY,
 } from "../core/scene-extras.mjs";
 
@@ -35,6 +38,9 @@ const DEFAULTS = {
   invisibleWalls: "glass", // "glass" (see-through panel with volume) or "hide"
   windowOpenings: true, // window walls get an opening with a glass pane
   useLevelHeight: false, // v14: walls span their level's height
+  cameraMode: "free", // "free" (perspective orbit) or "tactics" (orthographic, fixed angle, 90° turns)
+  spriteFacing: "camera", // see SPRITE_FACING
+  tacticsElevation: 30, // degrees above the ground for the tactics camera
   wallTexture: "",
   doorTexture: "",
   wallTextureScale: 1, // squares covered by one repeat of a wall texture
@@ -163,7 +169,13 @@ export class View3D {
     container.appendChild(this.renderer.domElement);
 
     this.scene = new THREE.Scene();
-    this.camera = new THREE.PerspectiveCamera(40, 1, 0.05, 2000);
+    this.perspCamera = new THREE.PerspectiveCamera(40, 1, 0.05, 2000);
+    // Tactics camera: parallel projection, so the map keeps its proportions like a classic SRPG.
+    this.orthoCamera = new THREE.OrthographicCamera(-1, 1, 1, -1, 0.05, 4000);
+    this.orthoHeight = 14; // squares visible vertically at zoom 1
+    this.camera = this.perspCamera;
+    this.cameraMode = "free";
+    this._rotAnim = null;
     this.controls = new OrbitControls(this.camera, this.renderer.domElement);
     this.controls.enableDamping = true;
     this.controls.dampingFactor = 0.12;
@@ -341,6 +353,7 @@ export class View3D {
     this.setLights(model.lights ?? [], model.darkness ?? 0);
     // v14: show the viewed level and the ones below it (Foundry redraws on level change).
     this.setLevelCutoff(Number.isInteger(model.viewedLevelIndex) ? model.viewedLevelIndex : Infinity);
+    if (this.options.cameraMode === "tactics") this.setCameraMode("tactics");
     this.resetCamera();
   }
 
@@ -692,6 +705,11 @@ export class View3D {
     }).catch((e) => console.warn("foundry-3d-view | wall texture failed", src, e));
   }
 
+  /** Sprite facing mode (see SPRITE_FACING). */
+  setSpriteFacing(mode) {
+    this.options.spriteFacing = Object.values(SPRITE_FACING).includes(mode) ? mode : SPRITE_FACING.CAMERA;
+  }
+
   /** Change how walls look and rebuild them. */
   setWallStyle({ wallMode, wallTexture, doorTexture, wallTextureScale, windowTexture, glassTexture, invisibleWalls, windowOpenings, useLevelHeight } = {}) {
     if (windowTexture !== undefined) this.options.windowTexture = windowTexture || "";
@@ -780,7 +798,8 @@ export class View3D {
       this.tokens.set(t.id, entry);
       snap = true;
     }
-    const srcChanged = entry.data?.src !== t.src || !entry.textureApplied;
+    const artKey = (d) => `${d?.src}|${d?.sheet ? JSON.stringify(d.sheet) : ""}`;
+    const srcChanged = artKey(entry.data) !== artKey(t) || !entry.textureApplied;
     entry.data = t;
     entry.levelHidden = !this._levelVisible(t.levelIndex);
     this._applyTokenVisible(entry);
@@ -819,7 +838,8 @@ export class View3D {
   }
 
   async _applyTokenTexture(entry) {
-    const src = entry.data.src;
+    const sheet = entry.data.sheet;
+    const src = sheet?.src || entry.data.src;
     let tex = null;
     if (src) {
       try {
@@ -828,7 +848,17 @@ export class View3D {
         console.warn("foundry-3d-view | token texture failed", src, e);
       }
     }
-    if (this._disposed || entry.data.src !== src) return;
+    if (this._disposed || (entry.data.sheet?.src || entry.data.src) !== src) return;
+    entry.sheetTex?.dispose();
+    entry.sheetTex = null;
+    if (tex && sheet && (sheet.directions > 1 || sheet.frames > 1)) {
+      // Own copy so this token can show its own cell of the sheet.
+      tex = tex.clone();
+      tex.needsUpdate = true;
+      entry.sheetTex = tex;
+      entry.sheetRow = entry.sheetCol = -1;
+      entry.phase = Math.random() * 10; // tokens don't animate in lockstep
+    }
     entry.card.material.map = tex;
     entry.card.material.color.set(tex ? 0xffffff : 0x999999);
     entry.card.material.needsUpdate = true;
@@ -839,7 +869,9 @@ export class View3D {
   _sizeCard(entry) {
     const t = entry.data;
     const img = entry.card.material.map?.image;
-    const aspect = img && img.width ? (img.videoHeight || img.height) / (img.videoWidth || img.width) : 1;
+    let aspect = img && img.width ? (img.videoHeight || img.height) / (img.videoWidth || img.width) : 1;
+    // A sheet cell is (height / directions) by (width / frames).
+    if (entry.sheetTex && t.sheet) aspect *= t.sheet.frames / t.sheet.directions;
     const w = t.width * t.scaleX;
     entry.card.scale.set(w * (t.mirrorX ? -1 : 1), w * aspect * (t.scaleY / t.scaleX), 1);
     entry.card.position.y = 0.06;
@@ -1077,6 +1109,64 @@ export class View3D {
   /* Camera                                                                                   */
   /* ---------------------------------------------------------------------------------------- */
 
+  /** Current camera yaw (atan2(x, z) of the camera offset from the target). */
+  cameraYaw() {
+    const o = this.camera.position.clone().sub(this.controls.target);
+    return Math.atan2(o.x, o.z);
+  }
+
+  /** Polar angle used by the tactics camera (from straight up). */
+  _tacticsPolar() {
+    return this.topDown ? 0 : THREE.MathUtils.degToRad(90 - (this.options.tacticsElevation || 30));
+  }
+
+  /** Put the active camera at `dist` from the target with the given polar/azimuth. */
+  _placeCamera(polar, azimuth, dist) {
+    const t = this.controls.target;
+    this.camera.position.set(
+      t.x + dist * Math.sin(polar) * Math.sin(azimuth),
+      t.y + dist * Math.cos(polar) + (polar === 0 ? 0 : 0),
+      t.z + dist * Math.sin(polar) * Math.cos(azimuth) + (polar === 0 ? 1e-3 : 0),
+    );
+  }
+
+  /**
+   * "free": perspective orbit camera. "tactics": orthographic camera at a fixed elevation on a
+   * diagonal, rotated in 90° steps (Final Fantasy Tactics style). Zoom and pan work in both.
+   */
+  setCameraMode(mode) {
+    mode = mode === "tactics" ? "tactics" : "free";
+    if (mode === this.cameraMode && this.camera === (mode === "tactics" ? this.orthoCamera : this.perspCamera)) return;
+    const yaw = this.cameraYaw();
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    this.cameraMode = mode;
+    this.options.cameraMode = mode;
+    this._rotAnim = null;
+    if (mode === "tactics") {
+      this.camera = this.orthoCamera;
+      this.controls.object = this.orthoCamera;
+      // Keep roughly the same framing: visible height ≈ what the perspective camera showed.
+      this.orthoCamera.zoom = THREE.MathUtils.clamp(this.orthoHeight / Math.max(4, dist * 0.7), 0.15, 6);
+      this.orthoCamera.updateProjectionMatrix();
+      const polar = this._tacticsPolar();
+      this._placeCamera(polar, snapTacticsYaw(yaw), 200);
+      this.controls.minPolarAngle = this.controls.maxPolarAngle = polar;
+      this.controls.enableRotate = false;
+      this.controls.minZoom = 0.1;
+      this.controls.maxZoom = 8;
+    } else {
+      this.camera = this.perspCamera;
+      this.controls.object = this.perspCamera;
+      const d = Math.max(6, this.orthoHeight / Math.max(0.1, this.orthoCamera.zoom) / 0.7);
+      this.controls.minPolarAngle = 0;
+      this.controls.maxPolarAngle = THREE.MathUtils.degToRad(85);
+      this.controls.enableRotate = !this.topDown;
+      this._placeCamera(this.topDown ? 0 : THREE.MathUtils.degToRad(55), yaw, d);
+      if (this.topDown) this._applyTopDown();
+    }
+    this.controls.update();
+  }
+
   /** Look at the scene (or a canvas point) from a classic tactics angle. */
   resetCamera(focus = null) {
     const g = this.grid;
@@ -1084,16 +1174,16 @@ export class View3D {
     const target = focus ? canvasToWorld(g, focus.x, focus.y) : { x: 0, z: 0 };
     const span = focus ? 10 : Math.max(g.cols, g.rows);
     const dist = Math.max(6, span * 0.95);
-    const polar = THREE.MathUtils.degToRad(55);
-    const azimuth = THREE.MathUtils.degToRad(35);
     this.controls.target.set(target.x, 0, target.z);
-    this.camera.position.set(
-      target.x + dist * Math.sin(polar) * Math.sin(azimuth),
-      dist * Math.cos(polar),
-      target.z + dist * Math.sin(polar) * Math.cos(azimuth),
-    );
     this.controls.maxDistance = Math.max(g.cols, g.rows) * 3;
-    if (this.topDown) this._applyTopDown();
+    if (this.cameraMode === "tactics") {
+      this.orthoCamera.zoom = THREE.MathUtils.clamp(this.orthoHeight / Math.max(4, span * 0.75), 0.1, 8);
+      this.orthoCamera.updateProjectionMatrix();
+      this._placeCamera(this._tacticsPolar(), snapTacticsYaw(this.cameraYaw()), 200);
+    } else {
+      this._placeCamera(THREE.MathUtils.degToRad(55), THREE.MathUtils.degToRad(35), dist);
+      if (this.topDown) this._applyTopDown();
+    }
     this.controls.update();
   }
 
@@ -1110,6 +1200,14 @@ export class View3D {
     on = !!on;
     if (on === this.topDown) return;
     this.topDown = on;
+    if (this.cameraMode === "tactics") {
+      const polar = this._tacticsPolar();
+      this._placeCamera(polar, on ? 0 : snapTacticsYaw(this._savedTacticsYaw ?? Math.PI / 4), 200);
+      if (on) this._savedTacticsYaw = this.cameraYaw();
+      this.controls.minPolarAngle = this.controls.maxPolarAngle = polar;
+      this.controls.update();
+      return;
+    }
     if (on) {
       this._saved = { offset: this.camera.position.clone().sub(this.controls.target) };
       this._applyTopDown();
@@ -1131,12 +1229,31 @@ export class View3D {
     this.controls.enableRotate = false;
   }
 
-  /** Rotate the camera around the target by `deg` degrees (tactics-style quarter turns). */
-  rotateBy(deg) {
+  /**
+   * Rotate the camera around the target by `deg` degrees. Animated by default; in tactics mode the
+   * end angle snaps to a diagonal.
+   */
+  rotateBy(deg, { animate = true } = {}) {
+    const rad = THREE.MathUtils.degToRad(deg);
+    if (!animate) {
+      this._rotateCamera(rad);
+      if (this.cameraMode === "tactics" && !this.topDown) this._snapTactics();
+      this.controls.update();
+      return;
+    }
+    const pending = this._rotAnim?.left ?? 0;
+    this._rotAnim = { left: pending + rad };
+  }
+
+  _rotateCamera(rad) {
     const offset = this.camera.position.clone().sub(this.controls.target);
-    offset.applyAxisAngle(new THREE.Vector3(0, 1, 0), THREE.MathUtils.degToRad(deg));
+    offset.applyAxisAngle(_up, rad);
     this.camera.position.copy(this.controls.target).add(offset);
-    this.controls.update();
+  }
+
+  _snapTactics() {
+    const dist = this.camera.position.distanceTo(this.controls.target);
+    this._placeCamera(this._tacticsPolar(), snapTacticsYaw(this.cameraYaw()), dist);
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -1293,17 +1410,30 @@ export class View3D {
     const w = this.container.clientWidth || 1;
     const h = this.container.clientHeight || 1;
     this.renderer.setSize(w, h, false);
-    this.camera.aspect = w / h;
-    this.camera.updateProjectionMatrix();
+    this.perspCamera.aspect = w / h;
+    this.perspCamera.updateProjectionMatrix();
+    const oh = this.orthoHeight / 2;
+    Object.assign(this.orthoCamera, { left: -oh * (w / h), right: oh * (w / h), top: oh, bottom: -oh });
+    this.orthoCamera.updateProjectionMatrix();
   }
 
   _loop(now) {
     const dt = Math.min(0.1, (now - this._last) / 1000);
     this._last = now;
+    if (this._rotAnim) {
+      const step = Math.sign(this._rotAnim.left) * Math.min(Math.abs(this._rotAnim.left), dt * Math.PI * 1.6);
+      this._rotateCamera(step);
+      this._rotAnim.left -= step;
+      if (Math.abs(this._rotAnim.left) < 1e-4) {
+        this._rotAnim = null;
+        if (this.cameraMode === "tactics" && !this.topDown) this._snapTactics();
+      }
+    }
     this.controls.update();
     const k = 1 - Math.exp(-dt * 14);
     const target = this.controls.target;
     const cam = this.camera.position;
+    this._time = (this._time ?? 0) + dt;
 
     // Camera polar angle drives how far standees lean back (flat when seen from straight above).
     const offset = cam.clone().sub(target);
@@ -1314,12 +1444,41 @@ export class View3D {
     // All standees share the camera's yaw (screen-aligned, like sprites in tactics games), so in
     // top-down view they all lie flat with their top toward the top of the screen.
     const yaw = Math.atan2(offset.x, offset.z);
+    const facing = this.options.spriteFacing;
+    // Billboard: parallel to the screen (tilted back by the camera's elevation), like FFT/Doom.
+    const billboardLean = Math.PI / 2 - polar;
     for (const [, t] of this.tokens) {
       t.group.position.lerp(t.target, k);
-      t.yaw.rotation.y = yaw;
-      t.pivot.rotation.x = -lean;
+      const faceYaw = tokenFacingYaw(t.data.rotation);
+      let l = lean, ff = f;
+      if (facing === SPRITE_FACING.BILLBOARD) {
+        l = billboardLean;
+        ff = THREE.MathUtils.clamp((0.75 - polar) / 0.5, 0, 1);
+        t.yaw.rotation.y = yaw;
+      } else if (facing === SPRITE_FACING.STANDEE) {
+        t.yaw.rotation.y = faceYaw;
+      } else {
+        t.yaw.rotation.y = yaw;
+      }
+      t.pivot.rotation.x = -l;
       // When lying down, slide the card so its centre (not its foot) sits on the token.
-      t.pivot.position.set(0, f * 0.08, (f * Math.abs(t.card.scale.y)) / 2);
+      t.pivot.position.set(0, ff * 0.08, (ff * Math.abs(t.card.scale.y)) / 2);
+      // Directional / animated sprite sheet: pick the cell for this view angle and time.
+      if (t.sheetTex) {
+        const sh = t.data.sheet;
+        const viewYaw = this.cameraMode === "tactics"
+          ? yaw
+          : Math.atan2(cam.x - t.group.position.x, cam.z - t.group.position.z);
+        const row = directionRow(sh.directions, faceYaw, viewYaw);
+        const col = animationColumn(sh.frames, sh.fps, this._time + t.phase);
+        if (row !== t.sheetRow || col !== t.sheetCol) {
+          const uv = sheetCellUV(sh.frames, sh.directions, col, row);
+          t.sheetTex.repeat.set(uv.repeat[0], uv.repeat[1]);
+          t.sheetTex.offset.set(uv.offset[0], uv.offset[1]);
+          t.sheetRow = row;
+          t.sheetCol = col;
+        }
+      }
     }
 
     // Doors swing; walls toward the camera sink when cutaway is on.

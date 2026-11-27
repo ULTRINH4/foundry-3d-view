@@ -311,7 +311,18 @@
    "height": 1,
    "elevation": 0,
    "disposition": 1,
-   "src": "gen:mage"
+   "src": "gen:mage",
+   "rotation": 270,
+   "flags": {
+    "foundry-3d-view": {
+     "sheet": {
+      "src": "gen:sheet",
+      "directions": 4,
+      "frames": 2,
+      "fps": 4
+     }
+    }
+   }
   },
   {
    "_id": "boss",

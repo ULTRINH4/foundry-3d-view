@@ -201,3 +201,40 @@ export function drawPlanks() {
   ctx.fillRect(0, 92, 128, 6);
   return cv;
 }
+
+/**
+ * Directional + animated sprite sheet for tests: 4 rows (front, left, back, right) x 2 frames.
+ * Each cell shows a letter for its direction and a bobbing arm for its frame.
+ */
+export function drawSpriteSheet(color = "#2e86c1") {
+  const cw = 128, ch = 160, rows = ["F", "L", "B", "R"], frames = 2;
+  const cv = document.createElement("canvas");
+  cv.width = cw * frames;
+  cv.height = ch * rows.length;
+  const ctx = cv.getContext("2d");
+  rows.forEach((label, r) => {
+    for (let f = 0; f < frames; f++) {
+      const x = f * cw, y = r * ch;
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(x + 24, y + ch - 4);
+      ctx.quadraticCurveTo(x + cw / 2, y + 20, x + cw - 24, y + ch - 4);
+      ctx.fill();
+      ctx.fillStyle = label === "B" ? "#5b3a1a" : "#f0d0a8"; // back of the head shows hair
+      ctx.beginPath();
+      ctx.arc(x + cw / 2, y + 50, 30, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.fillStyle = "#fff";
+      ctx.font = "bold 40px sans-serif";
+      ctx.textAlign = "center";
+      ctx.fillText(label, x + cw / 2, y + 125);
+      ctx.strokeStyle = "#111";
+      ctx.lineWidth = 6;
+      ctx.beginPath(); // arm: up on frame 1
+      ctx.moveTo(x + cw - 34, y + 95);
+      ctx.lineTo(x + cw - 12, y + (f ? 60 : 110));
+      ctx.stroke();
+    }
+  });
+  return cv;
+}

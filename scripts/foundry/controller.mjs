@@ -80,6 +80,8 @@ export class Tactics3DController {
       cutaway: game.settings.get(MODULE_ID, "cutaway"),
       showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
       startHidden: !game.user.isGM,
+      cameraMode: game.settings.get(MODULE_ID, "cameraMode"),
+      spriteFacing: game.settings.get(MODULE_ID, "spriteFacing"),
       ...wallStyle(),
       resolveSrc,
     });
@@ -106,10 +108,17 @@ export class Tactics3DController {
       unitLabel: canvas.scene.grid?.units ?? "",
       levels: this.model.levels,
       viewedLevelIndex: this.model.viewedLevelIndex,
-      initial: { cutaway: game.settings.get(MODULE_ID, "cutaway"), showRoofs: game.settings.get(MODULE_ID, "showRoofs") },
-      onViewSettings: ({ cutaway, showRoofs }) => {
+      initial: {
+        cutaway: game.settings.get(MODULE_ID, "cutaway"),
+        showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
+        cameraMode: game.settings.get(MODULE_ID, "cameraMode"),
+        spriteFacing: game.settings.get(MODULE_ID, "spriteFacing"),
+      },
+      onViewSettings: ({ cutaway, showRoofs, cameraMode, spriteFacing }) => {
         game.settings.set(MODULE_ID, "cutaway", cutaway);
         game.settings.set(MODULE_ID, "showRoofs", showRoofs);
+        if (cameraMode) game.settings.set(MODULE_ID, "cameraMode", cameraMode);
+        if (spriteFacing) game.settings.set(MODULE_ID, "spriteFacing", spriteFacing);
       },
       getWalls: () => Array.from(canvas.scene.walls).map(wallData).filter((w) => !w.levelIndex),
       getFocus: () => this._focusPoint(),
@@ -157,7 +166,10 @@ export class Tactics3DController {
   async _loadScene() {
     const model = buildSceneModel(canvas.scene, canvas.dimensions, { viewedLevelId: canvas.level?.id ?? null });
     model.background.src = resolveSrc(model.background.src);
-    for (const tok of model.tokens) tok.src = resolveSrc(tok.src);
+    for (const tok of model.tokens) {
+      tok.src = resolveSrc(tok.src);
+      if (tok.sheet) tok.sheet.src = resolveSrc(tok.sheet.src);
+    }
     for (const tile of model.tiles) tile.src = resolveSrc(tile.src);
     for (const lv of model.levels) lv.background.src = resolveSrc(lv.background.src);
     model.darkness = currentDarkness();
@@ -284,6 +296,7 @@ export class Tactics3DController {
     const token = (doc) => {
       const data = this._withLevel(doc, tokenData(doc));
       data.src = resolveSrc(data.src);
+      if (data.sheet) data.sheet.src = resolveSrc(data.sheet.src);
       return data;
     };
     this._on("createToken", async (doc) => {

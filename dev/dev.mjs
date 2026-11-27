@@ -5,7 +5,7 @@
  * the interaction callbacks and computes fog with the pure line-of-sight code.
  *
  * URL params: ?topdown=1  ?player=1  ?az=<deg>  ?paint=1  ?cutaway=1  ?select=<tokenId>  ?selftest=1
- *             ?walls=map|texture|flat
+ *             ?walls=map|texture|flat  ?camera=tactics  ?sprites=camera|billboard|standee
  */
 import * as THREE from "../vendor/three/three.module.js";
 import { View3D } from "../scripts/render/view3d.mjs";
@@ -13,7 +13,7 @@ import { createHud } from "../scripts/ui/hud.mjs";
 import { createInteraction } from "../scripts/ui/interact.mjs";
 import { modelFromJSON } from "../scripts/core/scene-model.mjs";
 import { getHeight } from "../scripts/core/heights.mjs";
-import { drawDungeon, drawToken, drawBalcony, drawRug, drawRoof, drawBricks, drawPlanks } from "./art.mjs";
+import { drawDungeon, drawToken, drawBalcony, drawRug, drawRoof, drawBricks, drawPlanks, drawSpriteSheet } from "./art.mjs";
 import { losVisibilityTest, visibleCells, fogStates, FOG } from "../scripts/core/vision.mjs";
 import { gridSquares, DIAGONALS, formatDistance } from "../scripts/core/scene-extras.mjs";
 import { canvasToWorld, canvasToCell, tokenCenter } from "../scripts/core/coords.mjs";
@@ -36,7 +36,10 @@ const groundArt = art["gen:dungeon"]();
 model.background.src = groundArt;
 for (const lv of model.levels) lv.background.src = lv.background.src === "gen:dungeon" ? groundArt : art[lv.background.src]?.() ?? null;
 for (const tile of model.tiles) tile.src = art[tile.src]?.() ?? null;
-for (const tok of model.tokens) tok.src = drawToken(tok);
+for (const tok of model.tokens) {
+  tok.src = drawToken(tok);
+  if (tok.sheet) tok.sheet.src = drawSpriteSheet("#8e44ad");
+}
 
 const overlay = document.getElementById("f3d-overlay");
 let playerView = params.has("player");
@@ -49,6 +52,8 @@ const view = new View3D(overlay.querySelector(".f3d-viewport"), {
   wallTexture: "gen:brick",
   doorTexture: wallMode === "texture" ? "gen:planks" : "",
   resolveSrc: (src) => wallArt[src] ?? src,
+  cameraMode: params.get("camera") ?? "free",
+  spriteFacing: params.get("sprites") ?? "camera",
 });
 await view.load(model);
 
@@ -123,7 +128,7 @@ const hud = createHud(overlay, {
   step: 2.5,
   unitLabel: "ft",
   levels: model.levels,
-  initial: { cutaway: params.has("cutaway"), showRoofs: true },
+  initial: { cutaway: params.has("cutaway"), showRoofs: true, cameraMode: params.get("camera") ?? "free", spriteFacing: params.get("sprites") ?? "camera" },
   getWalls: () => model.walls.filter((w) => (w.levelIndex ?? 0) === 0),
   onHeightsChanged: (h) => (model.heights = h),
 });
@@ -149,7 +154,7 @@ const interaction = createInteraction(view, {
   },
 });
 
-if (params.has("az")) view.rotateBy(Number(params.get("az")));
+if (params.has("az")) view.rotateBy(Number(params.get("az")), { animate: false });
 if (params.has("topdown")) hud.button("topDown").click();
 if (params.has("paint")) hud.button("painting").click();
 if (params.has("select")) {
@@ -328,6 +333,36 @@ async function runSelfTest() {
   r.windowCanBeSolid = view.walls.get("w21")?.instanced === true;
   view.setWallStyle({ invisibleWalls: "glass", windowOpenings: true });
   r.wallKindsRestored = view.walls.has("w27") && !!view.walls.get("w21")?.isWindow;
+
+  // 8d. tactics camera, sprite facing modes, directional sprite sheet
+  hud.button("tactics").click();
+  r.tacticsIsOrthographic = view.camera.isOrthographicCamera === true && view.cameraMode === "tactics";
+  const yawDeg = () => ((view.cameraYaw() * 180) / Math.PI + 360) % 360;
+  r.tacticsOnDiagonal = Math.abs(((yawDeg() - 45) % 90 + 90) % 90) < 0.5;
+  const mage = view.tokens.get("mage");
+  frames(2);
+  const rowBefore = mage.sheetRow;
+  const y0 = yawDeg();
+  view.rotateBy(90);
+  frames(40); // animated turn
+  r.tacticsTurns90 = Math.abs(((yawDeg() - y0 + 360) % 360) - 90) < 0.5;
+  view.rotateBy(90);
+  frames(40);
+  r.sheetRowChangesWithView = mage.sheetRow !== rowBefore && mage.sheetRow >= 0;
+  r.sheetCellSized = Math.abs(mage.sheetTex.repeat.x - 0.5) < 1e-6 && Math.abs(mage.sheetTex.repeat.y - 0.25) < 1e-6;
+  const col0 = mage.sheetCol;
+  frames(9); // 4 fps -> a new frame within 0.3 s
+  r.sheetAnimates = mage.sheetCol !== col0;
+  view.setSpriteFacing("billboard");
+  frames(2);
+  r.billboardTilts = Math.abs(mage.pivot.rotation.x + (Math.PI / 2 - (90 - 30) * Math.PI / 180)) < 0.02;
+  view.setSpriteFacing("standee");
+  frames(2);
+  r.standeeFollowsRotation = Math.abs(mage.yaw.rotation.y - (-270 * Math.PI / 180)) < 1e-6;
+  view.setSpriteFacing("camera");
+  r.raycastWorksInTactics = !!view.pickCell(canvas.getBoundingClientRect().width / 2, canvas.getBoundingClientRect().height / 2);
+  hud.button("tactics").click();
+  r.backToPerspective = view.camera.isPerspectiveCamera === true;
 
   // 9. player view: fog + vision
   setPlayerView(true);

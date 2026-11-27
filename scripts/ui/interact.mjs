@@ -90,7 +90,18 @@ export function createInteraction(view, o) {
     view.showRuler(lineCells(from, cell), o.measure(from, cell, selected[0]));
   };
 
+  let hovering = false;
+  canvas.addEventListener("pointerenter", () => (hovering = true));
+  canvas.addEventListener("pointerleave", () => (hovering = false));
   const onKey = (ev) => {
+    const typing = /^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement?.tagName ?? "") || document.activeElement?.isContentEditable;
+    if (hovering && !typing && !ev.ctrlKey && !ev.metaKey && !ev.altKey && (ev.key === "q" || ev.key === "e" || ev.key === "Q" || ev.key === "E")) {
+      ev.preventDefault();
+      ev.stopPropagation();
+      const step = view.cameraMode === "tactics" ? 90 : 45;
+      view.rotateBy(ev.key.toLowerCase() === "q" ? -step : step);
+      return;
+    }
     if (ev.key === "Escape" && o.getControlled().length) {
       o.onReleaseAll();
       clearHover();
@@ -101,7 +112,7 @@ export function createInteraction(view, o) {
   canvas.addEventListener("pointerup", onUp);
   canvas.addEventListener("pointermove", onMove);
   canvas.addEventListener("pointerleave", clearHover);
-  window.addEventListener("keydown", onKey);
+  window.addEventListener("keydown", onKey, true);
 
   return {
     refresh: () => {
@@ -113,7 +124,7 @@ export function createInteraction(view, o) {
       canvas.removeEventListener("pointerup", onUp);
       canvas.removeEventListener("pointermove", onMove);
       canvas.removeEventListener("pointerleave", clearHover);
-      window.removeEventListener("keydown", onKey);
+      window.removeEventListener("keydown", onKey, true);
     },
   };
 }

@@ -53,6 +53,9 @@ const tokens = [
   tok("archer", "Archer", 20, 10, { disposition: -1, src: "gen:archer", elevation: 10, level: "balcony" }),
 ];
 tokens[0].light = { dim: 30, bright: 15, color: "#ffb35c" }; // the hero carries a torch
+// The mage uses a directional + animated sprite sheet (4 directions x 2 frames), facing east.
+tokens[1].rotation = 270;
+tokens[1].flags = { "foundry-3d-view": { sheet: { src: "gen:sheet", directions: 4, frames: 2, fps: 4 } } };
 
 const tiles = [
   // A rug in room A (floor tile) and a roof over room C (overhead: elevation >= foreground 20)

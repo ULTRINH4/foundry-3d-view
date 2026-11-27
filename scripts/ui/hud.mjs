@@ -30,6 +30,8 @@ export function createHud(root, o) {
     painting: false,
     topDown: false,
     cutaway: !!o.initial?.cutaway,
+    tactics: o.initial?.cameraMode === "tactics",
+    spriteFacing: o.initial?.spriteFacing ?? "camera",
     showRoofs: o.initial?.showRoofs ?? true,
     brush: 1,
   };
@@ -55,21 +57,40 @@ export function createHud(root, o) {
       state[key] = !state[key];
       b.classList.toggle("active", state[key]);
       apply(state[key]);
-      o.onViewSettings?.({ cutaway: state.cutaway, showRoofs: state.showRoofs });
+      o.onViewSettings?.(viewSettings());
     });
     b.classList.toggle("active", !!state[key]);
     b.dataset.key = key;
     return b;
   };
 
+  const viewSettings = () => ({
+    cutaway: state.cutaway, showRoofs: state.showRoofs,
+    cameraMode: state.tactics ? "tactics" : "free", spriteFacing: state.spriteFacing,
+  });
+  const FACINGS = ["camera", "billboard", "standee"];
+  const facingLabel = () => `${t("F3D.HUD.Sprites")}: ${t(`F3D.HUD.Facing.${state.spriteFacing}`)}`;
+  view.setSpriteFacing?.(state.spriteFacing);
   const camGroup = el("div", "f3d-group");
   camGroup.append(
     toggle("fa-solid fa-map", t("F3D.HUD.TopDown"), "topDown", (on) => view.setTopDown(on)),
-    button("fa-solid fa-rotate-left", t("F3D.HUD.RotateLeft"), () => view.rotateBy(-45)),
-    button("fa-solid fa-rotate-right", t("F3D.HUD.RotateRight"), () => view.rotateBy(45)),
+    toggle("fa-solid fa-chess-board", t("F3D.HUD.Tactics"), "tactics", (on) => view.setCameraMode(on ? "tactics" : "free")),
+    button("fa-solid fa-rotate-left", t("F3D.HUD.RotateLeft"), () => view.rotateBy(state.tactics ? -90 : -45)),
+    button("fa-solid fa-rotate-right", t("F3D.HUD.RotateRight"), () => view.rotateBy(state.tactics ? 90 : 45)),
     button("fa-solid fa-crosshairs", t("F3D.HUD.Recenter"), () => view.resetCamera(o.getFocus?.() ?? null)),
     toggle("fa-solid fa-scissors", t("F3D.HUD.Cutaway"), "cutaway", (on) => view.setCutaway(on)),
     toggle("fa-solid fa-house-chimney", t("F3D.HUD.Roofs"), "showRoofs", (on) => view.setShowRoofs(on)),
+    (() => {
+      const b = button("fa-solid fa-person", facingLabel(), () => {
+        state.spriteFacing = FACINGS[(FACINGS.indexOf(state.spriteFacing) + 1) % FACINGS.length];
+        view.setSpriteFacing(state.spriteFacing);
+        b.querySelector("span").textContent = facingLabel();
+        b.title = facingLabel();
+        o.onViewSettings?.(viewSettings());
+      });
+      b.dataset.key = "spriteFacing";
+      return b;
+    })(),
   );
   if (o.levels && o.levels.length > 1) {
     const sel = el("select", "f3d-level");

@@ -4,6 +4,7 @@
 import { MODULE_ID } from "./core/constants.mjs";
 import { Tactics3DController } from "./foundry/controller.mjs";
 import { injectWallConfig, openBulkWallDialog } from "./foundry/wall-config.mjs";
+import { injectTokenConfig } from "./foundry/token-config.mjs";
 
 const controller = new Tactics3DController();
 const TOOL = "f3dToggle";
@@ -137,6 +138,28 @@ Hooks.once("init", () => {
     default: true,
   });
   game.settings.register(MODULE_ID, "cutaway", { scope: "client", config: false, type: Boolean, default: false });
+  game.settings.register(MODULE_ID, "cameraMode", {
+    name: "F3D.Settings.CameraMode.Name",
+    hint: "F3D.Settings.CameraMode.Hint",
+    scope: "client",
+    config: true,
+    type: String,
+    choices: { free: "F3D.Settings.CameraMode.Free", tactics: "F3D.Settings.CameraMode.Tactics" },
+    default: "free",
+  });
+  game.settings.register(MODULE_ID, "spriteFacing", {
+    name: "F3D.Settings.SpriteFacing.Name",
+    hint: "F3D.Settings.SpriteFacing.Hint",
+    scope: "client",
+    config: true,
+    type: String,
+    choices: {
+      camera: "F3D.HUD.Facing.camera",
+      billboard: "F3D.HUD.Facing.billboard",
+      standee: "F3D.HUD.Facing.standee",
+    },
+    default: "camera",
+  });
   game.settings.register(MODULE_ID, "showRoofs", { scope: "client", config: false, type: Boolean, default: true });
   game.settings.register(MODULE_ID, "windowed", {
     scope: "client",
@@ -209,6 +232,9 @@ Hooks.on("getSceneControlButtons", (controls) => {
 
 // Per-wall 3D texture field in the Wall configuration sheet (v13 ApplicationV2; v12 jQuery).
 Hooks.on("renderWallConfig", (app, html) => injectWallConfig(app, html));
+// Directional / animated sprite sheet fields in the Token configuration sheets.
+Hooks.on("renderTokenConfig", (app, html) => injectTokenConfig(app, html));
+Hooks.on("renderPrototypeTokenConfig", (app, html) => injectTokenConfig(app, html));
 
 // Leaving the game view (e.g. scene deleted) must not leave a stale overlay around.
 Hooks.on("canvasTearDown", () => {
