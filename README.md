@@ -81,7 +81,7 @@ Then restart Foundry, enable **Foundry 3D View** in *Manage Modules*, open a sce
 
 ## How it was tested
 
-**Real Foundry: `npm run e2e` passes on both versions. v13 build 351 runs 51 checks (Ordem Paranormal system). v14 build 371 runs 60 checks (CoC7 system), including 9 for native levels.**
+**Real Foundry: `npm run e2e` passes on both versions. v13 build 351 runs 61 checks (Ordem Paranormal system). v14 build 371 runs 70 checks (CoC7 system), including native levels, wall kinds, half walls, the bulk wall tool and 3D models. `tools/foundry-compat.mjs` adds 11 compatibility checks per version, all passing on v13 and v14.**
 The script `tools/foundry-e2e.mjs` drives a real Foundry server through headless Edge (playwright-core), using real mouse and keyboard input. It runs in a throwaway data folder, never in your own worlds. It:
 - creates a world;
 - enables the module (and the system's required modules);
@@ -155,10 +155,21 @@ $env:FOUNDRY_URL="http://localhost:30013"; $env:FOUNDRY_SYSTEM="ordemparanormal"
 Foundry v13 needs Node 20 to 22 (Node 24 is refused), and a portable Node 22 works. Foundry v14 needs Node 24. For v14, run the installed app's `resources/app/main.mjs` the same way, with `FOUNDRY_SYSTEM=CoC7` or any v14 system.
 
 Other layers:
-1. **Unit tests** (`npm test`, 78, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
+1. **Unit tests** (`npm test`, 103, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
 2. **Dev page** (`dev/index.html`). The renderer, toolbar and interaction on a generated sample dungeon, with no Foundry needed.
 3. **Mock Foundry harness** (`dev/foundry-mock.html`). The real module runs against fake Foundry globals, as GM, as a player, and with v14-style levels.
-4. **Headless self-tests** (`npm run selftest`, 140 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
+4. **Headless self-tests** (`npm run selftest`, 164 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
+
+### Compatibility test (real Foundry + other modules)
+
+`node tools/foundry-compat.mjs` (with `FOUNDRY_URL`) runs against a real server with Sequencer, Carousel Combat Tracker (combat-tracker-dock), Token Action HUD core, socketlib and lib-wrapper enabled. It checks:
+- a real Sequencer `stretchTo` effect is mirrored in 3D between the two tokens, and removed when it ends;
+- starting combat and taking the next turn mark the active combatant and pan the camera to it;
+- the combat tracker and the combat dock stay visible above the 3D view;
+- right-clicking a standee opens Foundry's Token HUD over it;
+- the module logs no errors.
+
+All 11 checks pass on v13 and on v14.
 
 ### Still unverified
 - **Real GPUs and other systems.** All browser runs used SwiftShader. Only Ordem Paranormal (v13) and CoC7 (v14) were tested.
@@ -172,6 +183,7 @@ npm install          # three + vitest (dev only)
 npm test             # unit tests
 npm run selftest     # headless browser checks: dev page, mock Foundry (GM, player, levels), performance
 npm run e2e          # end-to-end against a running real Foundry server (see above)
+node tools/foundry-compat.mjs   # compatibility with Sequencer / combat dock / Token HUD (real server)
 npm run screenshot   # renders dev/screenshots/*.png
 npm run dev          # static server → http://localhost:8173/dev/  (and /dev/foundry-mock.html, /dev/perf.html)
 npm run vendor       # re-copy three.js from node_modules into vendor/three
@@ -209,6 +221,10 @@ Screenshots (`dev/screenshots/`):
 | `foundry-real-v14-levels-ground.png` | v14: viewing the ground level, with the balcony hidden |
 | `foundry-real-v14-levels-upper.png` | v14: after switching to the balcony level in Foundry |
 | `foundry-real-v14-levels-player.png` | v14: the player on the ground, with the archer upstairs hidden |
+| `foundry-real-v14-sequencer.png` | v14: a Sequencer fire effect (stretchTo) mirrored in 3D |
+| `foundry-real-v14-combat.png` | v14: combat, with the active combatant ringed, the tracker and the combat dock on top |
+| `foundry-real-v14-token-hud.png` | v14: Foundry's Token HUD over the 3D standee |
+| `dev-page-tactics.png` | Tactics (FFT-style) camera with billboard sprites, window glass, a half wall and 3D props |
 
 ### Releasing a new version
 
