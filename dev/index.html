@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Foundry 3D View – dev page</title>
+  <link rel="stylesheet" href="../styles/foundry-3d-view.css">
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    #f3d-overlay .f3d-hud { top: 10px; }
+    #dev-panel {
+      position: absolute; left: 10px; bottom: 10px; z-index: 3;
+      display: flex; flex-direction: column; gap: 4px; font-size: 12px;
+      background: rgba(15, 15, 20, 0.8); padding: 8px; border-radius: 6px; border: 1px solid #444;
+    }
+    #dev-panel b { font-size: 13px; }
+    #dev-panel button { font-size: 12px; }
+  </style>
+</head>
+<body>
+  <div id="f3d-overlay"><div class="f3d-viewport"></div></div>
+  <div id="dev-panel">
+    <b>Dev controls (simulated Foundry hooks)</b>
+    <button id="dev-door">Toggle corridor door (updateWall)</button>
+    <button id="dev-move">Move hero (updateToken)</button>
+    <button id="dev-player">Toggle player view (visibility)</button>
+    <span id="dev-status"></span>
+  </div>
+  <script type="module" src="./dev.mjs"></script>
+</body>
+</html>

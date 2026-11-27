@@ -1,0 +1,93 @@
+import { describe, it, expect } from "vitest";
+import { makeGrid } from "../scripts/core/coords.mjs";
+import {
+  wallData, wallBox, doorPose, doorFreeEnd, isRenderableWall, showAsDoor, isDoorOpen, wallVerticalExtent,
+} from "../scripts/core/walls.mjs";
+import { DOOR_STATE, WALL_DOOR, WALL_SENSE } from "../scripts/core/constants.mjs";
+
+const grid = makeGrid({ size: 100, sceneX: 0, sceneY: 0, sceneWidth: 1000, sceneHeight: 1000, distance: 5 });
+// world origin = canvas (500, 500)
+
+/** Where three.js would put local (x,0,0) after rotating by `angle` around +Y. */
+const rotX = (angle, len) => ({ x: Math.cos(angle) * len, z: -Math.sin(angle) * len });
+
+describe("wallData", () => {
+  it("fills defaults and reads Wall Height flags", () => {
+    const w = wallData({ _id: "a", c: [0, 0, 100, 0], flags: { "wall-height": { top: 10, bottom: "" } } });
+    expect(w).toMatchObject({ id: "a", move: 20, sight: 20, door: 0, ds: 0, top: 10, bottom: null });
+  });
+});
+
+describe("wallBox", () => {
+  it("horizontal wall: centred, unrotated, right length", () => {
+    const b = wallBox(wallData({ c: [500, 500, 700, 500] }), grid, { height: 2, thickness: 0.1 });
+    expect(b.cx).toBeCloseTo(1);
+    expect(b.cz).toBeCloseTo(0);
+    expect(b.length).toBeCloseTo(2);
+    expect(b.angle).toBeCloseTo(0);
+    expect([b.bottom, b.top, b.thickness]).toEqual([0, 2, 0.1]);
+  });
+
+  it.each([
+    [[500, 500, 500, 800]], // pointing down the map (+z)
+    [[500, 500, 300, 300]], // diagonal up-left
+    [[600, 450, 650, 900]],
+  ])("rotation maps local X onto the segment %j", (c) => {
+    const w = wallData({ c });
+    const b = wallBox(w, grid, { height: 1 });
+    const half = rotX(b.angle, b.length / 2);
+    // centre +/- half-length along local X must land on the endpoints
+    expect(b.cx - half.x).toBeCloseTo((c[0] - 500) / 100);
+    expect(b.cz - half.z).toBeCloseTo((c[1] - 500) / 100);
+    expect(b.cx + half.x).toBeCloseTo((c[2] - 500) / 100);
+    expect(b.cz + half.z).toBeCloseTo((c[3] - 500) / 100);
+  });
+
+  it("stands on the terrain base and honours explicit top/bottom", () => {
+    const w = wallData({ c: [0, 0, 100, 0] });
+    expect(wallBox(w, grid, { height: 2, base: 1.5 }).top).toBe(3.5);
+    const tall = wallData({ c: [0, 0, 100, 0], flags: { "wall-height": { top: 20, bottom: 5 } } });
+    expect(wallVerticalExtent(tall, grid, { height: 2 })).toEqual({ bottom: 1, top: 4 });
+  });
+});
+
+describe("doors", () => {
+  const door = (ds) => wallData({ c: [500, 500, 600, 500], door: WALL_DOOR.DOOR, ds });
+
+  it("closed door free end sits on the far endpoint", () => {
+    const end = doorFreeEnd(doorPose(door(DOOR_STATE.CLOSED), grid, { height: 2 }));
+    expect(end.x).toBeCloseTo(1);
+    expect(end.z).toBeCloseTo(0);
+  });
+
+  it("open door swings 90 degrees around the hinge", () => {
+    const pose = doorPose(door(DOOR_STATE.OPEN), grid, { height: 2 });
+    expect(pose.hx).toBeCloseTo(0);
+    expect(pose.angle - pose.closedAngle).toBeCloseTo(Math.PI / 2);
+    const end = doorFreeEnd(pose);
+    expect(Math.hypot(end.x - pose.hx, end.z - pose.hz)).toBeCloseTo(1);
+    expect(end.x).toBeCloseTo(0);
+    expect(Math.abs(end.z)).toBeCloseTo(1);
+  });
+
+  it("locked counts as closed", () => {
+    expect(isDoorOpen(door(DOOR_STATE.LOCKED))).toBe(false);
+    expect(isDoorOpen(door(DOOR_STATE.OPEN))).toBe(true);
+  });
+
+  it("secret doors look like walls to players until opened", () => {
+    const s = (ds) => wallData({ c: [0, 0, 1, 0], door: WALL_DOOR.SECRET, ds });
+    expect(showAsDoor(s(DOOR_STATE.CLOSED), false)).toBe(false);
+    expect(showAsDoor(s(DOOR_STATE.CLOSED), true)).toBe(true);
+    expect(showAsDoor(s(DOOR_STATE.OPEN), false)).toBe(true);
+  });
+});
+
+describe("isRenderableWall", () => {
+  it("skips invisible and zero-length walls, keeps doors", () => {
+    expect(isRenderableWall(wallData({ c: [0, 0, 1, 0] }))).toBe(true);
+    expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE }))).toBe(false);
+    expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE, door: 1 }))).toBe(true);
+    expect(isRenderableWall(wallData({ c: [5, 5, 5, 5] }))).toBe(false);
+  });
+});
