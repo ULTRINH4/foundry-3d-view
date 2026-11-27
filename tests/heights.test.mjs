@@ -59,6 +59,13 @@ describe("height lookups", () => {
     // vertical wall between cell (1,1)=5 and (2,1)=10, only spanning row 1
     expect(wallBaseHeight(m, grid, [300, 200, 300, 300])).toBe(5);
   });
+  it("wall base ignores the squares just past the wall's ends", () => {
+    // Wall along the top edge of row 1 from x=200 to 300 (cell 1 only); cell (2,1)=10 is past its end.
+    let mm = createHeightMap(6, 4);
+    mm = setHeight(mm, 2, 0, 10);
+    mm = setHeight(mm, 2, 1, 10);
+    expect(wallBaseHeight(mm, grid, [200, 200, 300, 200])).toBe(0);
+  });
   it("max along a wall", () => {
     expect(maxHeightAlongSegment(m, grid, [100, 250, 700, 250])).toBe(10);
     expect(maxHeightAlongSegment(m, grid, [100, 450, 700, 450])).toBe(0);

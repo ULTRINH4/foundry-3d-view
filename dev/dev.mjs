@@ -316,6 +316,19 @@ async function runSelfTest() {
   view.setWallStyle({ wallMode: "map" });
   r.wallsBackToMap = view.wallMaterialKeyOf("w1") === "map" && [...view.walls.values()].filter((w) => w.instanced).length > 20;
 
+  // 8c. wall kinds: window opening, invisible glass, half wall
+  const win = view.walls.get("w21");
+  r.windowHasOpening = !!win?.isWindow && win.object.children.length === 3;
+  const inv = view.walls.get("w27");
+  r.invisibleWallIsGlass = !!inv && inv.materialKey === "glass" && inv.mesh.material.transparent;
+  const half = view.walls.get("w26");
+  r.halfWallIsHalf = !!half && Math.abs(half.height - 0.5) < 1e-6;
+  view.setWallStyle({ invisibleWalls: "hide", windowOpenings: false });
+  r.invisibleCanBeHidden = !view.walls.has("w27");
+  r.windowCanBeSolid = view.walls.get("w21")?.instanced === true;
+  view.setWallStyle({ invisibleWalls: "glass", windowOpenings: true });
+  r.wallKindsRestored = view.walls.has("w27") && !!view.walls.get("w21")?.isWindow;
+
   // 9. player view: fog + vision
   setPlayerView(true);
   const g = model.grid;

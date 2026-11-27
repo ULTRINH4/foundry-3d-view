@@ -26,10 +26,13 @@ const walls = [
   // Pillar in room B
   wall(16, 9, 17, 9), wall(17, 9, 17, 10), wall(17, 10, 16, 10), wall(16, 10, 16, 9),
   // Room C under A (x 3..8, y 9..14), reached through the secret door
-  wall(3, 9, 3, 14), wall(8, 9, 8, 14), wall(3, 14, 8, 14),
+  wall(3, 9, 3, 14, { sight: 30, light: 30 }), wall(8, 9, 8, 14), wall(3, 14, 8, 14), // west wall of C is a window
   // Level 2: railing around a balcony in room B (x 18..22, y 8..13) at 10 ft
   wall(18, 8, 22, 8, { level: "balcony", flags: { "wall-height": { bottom: 10, top: 13 } } }),
   wall(18, 8, 18, 13, { level: "balcony", flags: { "wall-height": { bottom: 10, top: 13 } } }),
+  // A half-height parapet and an invisible (glass) barrier in room B
+  wall(14, 7, 16, 7, { flags: { "foundry-3d-view": { height: 0.5 } } }),
+  wall(14, 12, 16, 12, { sight: 0 }),
 ];
 
 const g = makeGrid(grid);

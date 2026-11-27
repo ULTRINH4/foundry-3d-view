@@ -491,6 +491,11 @@ function wallStyle() {
     wallTexture: game.settings.get(MODULE_ID, "wallTexture"),
     doorTexture: game.settings.get(MODULE_ID, "doorTexture"),
     wallTextureScale: Number(game.settings.get(MODULE_ID, "wallTextureScale")) || 1,
+    windowTexture: game.settings.get(MODULE_ID, "windowTexture"),
+    glassTexture: game.settings.get(MODULE_ID, "glassTexture"),
+    windowOpenings: game.settings.get(MODULE_ID, "windowOpenings"),
+    invisibleWalls: game.settings.get(MODULE_ID, "invisibleWalls"),
+    useLevelHeight: game.settings.get(MODULE_ID, "useLevelHeight"),
   };
 }
 

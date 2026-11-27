@@ -12,7 +12,8 @@ import { DOOR_STATE, WALL_DOOR, WALL_SENSE } from "./constants.mjs";
 export function wallData(doc) {
   const c = Array.from(doc.c ?? [0, 0, 0, 0]).map(Number);
   const wh = doc.flags?.["wall-height"] ?? {};
-  return {
+  const f3d = doc.flags?.["foundry-3d-view"] ?? {};
+  const w = {
     id: doc.id ?? doc._id,
     c,
     move: doc.move ?? WALL_SENSE.NORMAL,
@@ -22,9 +23,51 @@ export function wallData(doc) {
     // Optional vertical extent in grid distance units (compatible with the "Wall Height" module flags).
     top: finiteOrNull(wh.top),
     bottom: finiteOrNull(wh.bottom),
-    // Optional per-wall texture (set in the Wall config sheet).
-    texture: doc.flags?.["foundry-3d-view"]?.texture || null,
+    // Optional per-wall 3D height in grid squares above the ground (0.5 = half wall).
+    height: finiteOrNull(f3d.height),
+    // Optional per-wall texture (set in the Wall config sheet or the bulk tool).
+    texture: f3d.texture || null,
   };
+  w.kind = wallKind(w);
+  return w;
+}
+
+/** What a wall is, for rendering. Mirrors Foundry's wall tools (walls layer presets). */
+export const WALL_KIND = Object.freeze({
+  WALL: "wall", DOOR: "door", WINDOW: "window", TERRAIN: "terrain", INVISIBLE: "invisible", ETHEREAL: "ethereal",
+});
+
+/**
+ * Foundry's "Window" tool creates walls with PROXIMITY (or DISTANCE) sight; "Invisible" walls block
+ * movement but not sight; "Ethereal" walls block neither (only light/sound); "Terrain" = LIMITED.
+ */
+export function wallKind(w) {
+  if (w.door === WALL_DOOR.DOOR || w.door === WALL_DOOR.SECRET) return WALL_KIND.DOOR;
+  if (w.sight === WALL_SENSE.NONE) return w.move === WALL_SENSE.NONE ? WALL_KIND.ETHEREAL : WALL_KIND.INVISIBLE;
+  if (w.sight === WALL_SENSE.PROXIMITY || w.sight === WALL_SENSE.DISTANCE) return WALL_KIND.WINDOW;
+  if (w.sight === WALL_SENSE.LIMITED) return WALL_KIND.TERRAIN;
+  return WALL_KIND.WALL;
+}
+
+/**
+ * Vertical layout of a window wall with an opening: solid below the sill and above the lintel,
+ * a glass pane in between. Fractions of the wall height.
+ */
+export function windowSections(bottom, top, { sill = 0.35, lintel = 0.8 } = {}) {
+  const h = top - bottom;
+  const s = bottom + h * sill;
+  const l = bottom + h * lintel;
+  return {
+    lower: { bottom, top: s },
+    glass: { bottom: s, top: l },
+    upper: { bottom: l, top },
+  };
+}
+
+/** Material key for see-through parts (invisible walls, window panes). */
+export function glassMaterialKey(w, { glassTexture = "" } = {}) {
+  if (w.kind === WALL_KIND.INVISIBLE && w.texture) return `glass:${w.texture}`;
+  return glassTexture ? `glass:${glassTexture}` : "glass";
 }
 
 /** Wall appearance modes (module setting). */
@@ -46,10 +89,11 @@ export const WALL_MODES = Object.freeze({ MAP: "map", TEXTURE: "texture", FLAT: 
  * @param {boolean} [o.asDoor]  drawn as a door (see showAsDoor)
  * @param {boolean} [o.hasMap]  a background image is available
  */
-export function wallMaterialKey(w, { mode = WALL_MODES.MAP, wallTexture = "", doorTexture = "", asDoor = false, hasMap = true } = {}) {
+export function wallMaterialKey(w, { mode = WALL_MODES.MAP, wallTexture = "", doorTexture = "", windowTexture = "", asDoor = false, hasMap = true } = {}) {
   if (asDoor && w.door === WALL_DOOR.SECRET) return "secretDoor";
   if (w.texture) return `tex:${w.texture}`;
   if (asDoor && doorTexture) return `tex:${doorTexture}`;
+  if (w.kind === WALL_KIND.WINDOW && windowTexture) return `tex:${windowTexture}`;
   if (mode === WALL_MODES.TEXTURE && wallTexture) return `tex:${wallTexture}`;
   if (mode === WALL_MODES.MAP && hasMap) return "map";
   return asDoor ? "door" : "flat";
@@ -61,13 +105,16 @@ function finiteOrNull(v) {
 }
 
 /**
- * Should this wall be drawn? Invisible walls (they do not block sight) are skipped; doors
- * are always drawn.
+ * Should this wall be drawn? Doors always; ethereal walls never; invisible walls (they block
+ * movement but not sight) only when `invisible` is not "hide" (they are drawn as glass).
  */
-export function isRenderableWall(w) {
+export function isRenderableWall(w, { invisible = "hide" } = {}) {
   if (w.door !== WALL_DOOR.NONE) return true;
   if (w.c[0] === w.c[2] && w.c[1] === w.c[3]) return false;
-  return w.sight !== WALL_SENSE.NONE;
+  const kind = w.kind ?? wallKind(w);
+  if (kind === WALL_KIND.ETHEREAL) return false;
+  if (kind === WALL_KIND.INVISIBLE) return invisible !== "hide";
+  return true;
 }
 
 export function isDoor(w) {
@@ -96,9 +143,16 @@ export function showAsDoor(w, isGM) {
  * @param {number} opts.height  default wall height in world units (squares)
  * @param {number} [opts.base=0] world Y of the terrain under the wall
  */
-export function wallVerticalExtent(w, grid, { height, base = 0 }) {
-  const bottom = w.bottom !== null ? unitsToWorldY(grid, w.bottom) : 0;
-  const top = w.top !== null ? unitsToWorldY(grid, w.top) : base + height;
+export function wallVerticalExtent(w, grid, { height, base = 0, level = null }) {
+  // v14: a wall on a level can span that level's height (level = {bottom, top} in units).
+  const levelBottom = level && Number.isFinite(level.bottom) ? unitsToWorldY(grid, level.bottom) : null;
+  const levelTop = level && Number.isFinite(level.top) ? unitsToWorldY(grid, level.top) : null;
+  const bottom = w.bottom !== null ? unitsToWorldY(grid, w.bottom) : levelBottom ?? 0;
+  let top;
+  if (w.top !== null) top = unitsToWorldY(grid, w.top); // Wall Height module flags
+  else if (w.height !== null && w.height !== undefined) top = base + w.height; // per-wall 3D height (half walls)
+  else if (levelTop !== null) top = levelTop;
+  else top = base + height;
   return { bottom, top: Math.max(top, bottom + 0.01) };
 }
 
@@ -106,12 +160,12 @@ export function wallVerticalExtent(w, grid, { height, base = 0 }) {
  * Box for a wall segment.
  * @returns {{cx:number, cz:number, length:number, angle:number, thickness:number, bottom:number, top:number}}
  */
-export function wallBox(w, grid, { height, thickness = 0.12, base = 0 }) {
+export function wallBox(w, grid, { height, thickness = 0.12, base = 0, level = null }) {
   const a = canvasToWorld(grid, w.c[0], w.c[1]);
   const b = canvasToWorld(grid, w.c[2], w.c[3]);
   const dx = b.x - a.x;
   const dz = b.z - a.z;
-  const { bottom, top } = wallVerticalExtent(w, grid, { height, base });
+  const { bottom, top } = wallVerticalExtent(w, grid, { height, base, level });
   return {
     cx: (a.x + b.x) / 2,
     cz: (a.z + b.z) / 2,
@@ -128,8 +182,8 @@ export function wallBox(w, grid, { height, thickness = 0.12, base = 0 }) {
  * a child offset by +length/2 on local X. When open it swings 90 degrees.
  * @returns {{hx:number, hz:number, length:number, angle:number, closedAngle:number, bottom:number, top:number}}
  */
-export function doorPose(w, grid, { height, base = 0, open = isDoorOpen(w) }) {
-  const box = wallBox(w, grid, { height, base });
+export function doorPose(w, grid, { height, base = 0, level = null, open = isDoorOpen(w) }) {
+  const box = wallBox(w, grid, { height, base, level });
   const a = canvasToWorld(grid, w.c[0], w.c[1]);
   const swing = open ? Math.PI / 2 : 0;
   return {

@@ -2,7 +2,7 @@ import { describe, it, expect } from "vitest";
 import { makeGrid } from "../scripts/core/coords.mjs";
 import {
   wallData, wallBox, doorPose, doorFreeEnd, isRenderableWall, showAsDoor, isDoorOpen, wallVerticalExtent,
-  wallMaterialKey, WALL_MODES,
+  wallMaterialKey, WALL_MODES, wallKind, WALL_KIND, windowSections, glassMaterialKey,
 } from "../scripts/core/walls.mjs";
 import { DOOR_STATE, WALL_DOOR, WALL_SENSE } from "../scripts/core/constants.mjs";
 
@@ -88,6 +88,8 @@ describe("isRenderableWall", () => {
   it("skips invisible and zero-length walls, keeps doors", () => {
     expect(isRenderableWall(wallData({ c: [0, 0, 1, 0] }))).toBe(true);
     expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE }))).toBe(false);
+    expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE }), { invisible: "glass" })).toBe(true);
+    expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE, move: WALL_SENSE.NONE }), { invisible: "glass" })).toBe(false);
     expect(isRenderableWall(wallData({ c: [0, 0, 1, 0], sight: WALL_SENSE.NONE, door: 1 }))).toBe(true);
     expect(isRenderableWall(wallData({ c: [5, 5, 5, 5] }))).toBe(false);
   });
@@ -122,5 +124,50 @@ describe("wallMaterialKey", () => {
     expect(wallMaterialKey(secret, { mode: WALL_MODES.MAP, asDoor: true })).toBe("secretDoor");
     // seen as a wall by players: it blends in like any wall
     expect(wallMaterialKey(secret, { mode: WALL_MODES.MAP, asDoor: false })).toBe("map");
+  });
+});
+
+describe("wall kinds, heights, windows and glass", () => {
+  const W = (extra) => wallData({ c: [500, 500, 700, 500], ...extra });
+  it("classifies walls like Foundry's wall tools", () => {
+    expect(W({}).kind).toBe(WALL_KIND.WALL);
+    expect(W({ door: 1 }).kind).toBe(WALL_KIND.DOOR);
+    expect(W({ sight: WALL_SENSE.PROXIMITY, light: 30 }).kind).toBe(WALL_KIND.WINDOW);
+    expect(W({ sight: WALL_SENSE.DISTANCE }).kind).toBe(WALL_KIND.WINDOW);
+    expect(W({ sight: WALL_SENSE.LIMITED }).kind).toBe(WALL_KIND.TERRAIN);
+    expect(W({ sight: WALL_SENSE.NONE }).kind).toBe(WALL_KIND.INVISIBLE);
+    expect(W({ sight: WALL_SENSE.NONE, move: WALL_SENSE.NONE }).kind).toBe(WALL_KIND.ETHEREAL);
+    expect(wallKind({ door: 0, sight: 20, move: 20 })).toBe("wall");
+  });
+  it("per-wall 3D height makes half walls on top of the terrain", () => {
+    const half = W({ flags: { "foundry-3d-view": { height: 0.5 } } });
+    expect(half.height).toBe(0.5);
+    expect(wallVerticalExtent(half, grid, { height: 2, base: 1 })).toEqual({ bottom: 0, top: 1.5 });
+  });
+  it("Wall Height flags win over the 3D height", () => {
+    const w = W({ flags: { "wall-height": { top: 5 }, "foundry-3d-view": { height: 0.5 } } });
+    expect(wallVerticalExtent(w, grid, { height: 2 }).top).toBe(1);
+  });
+  it("v14 level height bounds a wall when given", () => {
+    const w = W({});
+    expect(wallVerticalExtent(w, grid, { height: 2, level: { bottom: 10, top: 15 } })).toEqual({ bottom: 2, top: 3 });
+    expect(wallVerticalExtent(w, grid, { height: 2, level: { bottom: 0, top: Infinity } })).toEqual({ bottom: 0, top: 2 });
+  });
+  it("window opening sections", () => {
+    const s = windowSections(0, 2);
+    expect(s.lower).toEqual({ bottom: 0, top: 0.7 });
+    expect(s.glass).toEqual({ bottom: 0.7, top: 1.6 });
+    expect(s.upper).toEqual({ bottom: 1.6, top: 2 });
+  });
+  it("material keys for windows and glass", () => {
+    const win = W({ sight: WALL_SENSE.PROXIMITY });
+    expect(wallMaterialKey(win, { mode: WALL_MODES.MAP, windowTexture: "frame.png" })).toBe("tex:frame.png");
+    expect(wallMaterialKey(win, { mode: WALL_MODES.MAP })).toBe("map");
+    const inv = W({ sight: WALL_SENSE.NONE });
+    expect(glassMaterialKey(inv)).toBe("glass");
+    expect(glassMaterialKey(inv, { glassTexture: "glass.png" })).toBe("glass:glass.png");
+    const invTex = W({ sight: WALL_SENSE.NONE, flags: { "foundry-3d-view": { texture: "ice.png" } } });
+    expect(glassMaterialKey(invTex, { glassTexture: "glass.png" })).toBe("glass:ice.png");
+    expect(glassMaterialKey(win, { glassTexture: "glass.png" })).toBe("glass:glass.png");
   });
 });

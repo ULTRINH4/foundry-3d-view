@@ -3,7 +3,7 @@
  */
 import { MODULE_ID } from "./core/constants.mjs";
 import { Tactics3DController } from "./foundry/controller.mjs";
-import { injectWallConfig } from "./foundry/wall-config.mjs";
+import { injectWallConfig, openBulkWallDialog } from "./foundry/wall-config.mjs";
 
 const controller = new Tactics3DController();
 const TOOL = "f3dToggle";
@@ -70,6 +70,54 @@ Hooks.once("init", () => {
     type: Number,
     default: 1,
     range: { min: 0.25, max: 4, step: 0.25 },
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "windowTexture", {
+    name: "F3D.Settings.WindowTexture.Name",
+    hint: "F3D.Settings.WindowTexture.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    filePicker: "image",
+    default: "",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "windowOpenings", {
+    name: "F3D.Settings.WindowOpenings.Name",
+    hint: "F3D.Settings.WindowOpenings.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "invisibleWalls", {
+    name: "F3D.Settings.InvisibleWalls.Name",
+    hint: "F3D.Settings.InvisibleWalls.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    choices: { glass: "F3D.Settings.InvisibleWalls.Glass", hide: "F3D.Settings.InvisibleWalls.Hide" },
+    default: "glass",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "glassTexture", {
+    name: "F3D.Settings.GlassTexture.Name",
+    hint: "F3D.Settings.GlassTexture.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    filePicker: "image",
+    default: "",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "useLevelHeight", {
+    name: "F3D.Settings.UseLevelHeight.Name",
+    hint: "F3D.Settings.UseLevelHeight.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: false,
     onChange: restyle,
   });
   game.settings.register(MODULE_ID, "showGrid", {
@@ -143,6 +191,19 @@ Hooks.on("getSceneControlButtons", (controls) => {
   } else {
     const tokens = controls.tokens ?? controls.token;
     if (tokens?.tools) tokens.tools[TOOL] = tool;
+    // Walls controls: apply a 3D texture/height to every selected wall (GM only).
+    const walls = controls.walls;
+    if (walls?.tools && game.user.isGM) {
+      walls.tools.f3dWallStyle = {
+        name: "f3dWallStyle",
+        title: "F3D.WallTools.Title",
+        icon: "fa-solid fa-paint-roller",
+        order: 100,
+        button: true,
+        visible: true,
+        onChange: () => openBulkWallDialog(),
+      };
+    }
   }
 });
 

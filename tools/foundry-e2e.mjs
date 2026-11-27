@@ -213,7 +213,7 @@ const ids = await gm.evaluate(async () => {
   const dx = dim.sceneX - g.sceneX, dy = dim.sceneY - g.sceneY;
   const sx = (c) => [c[0] + dx, c[1] + dy, c[2] + dx, c[3] + dy];
   const walls = await scene.createEmbeddedDocuments("Wall", json.walls.filter((w) => !w.level).map((w) => ({
-    c: sx(w.c), door: w.door ?? 0, ds: w.ds ?? 0, move: 20, sight: 20, light: 20, sound: 20, flags: w.flags ?? {},
+    c: sx(w.c), door: w.door ?? 0, ds: w.ds ?? 0, move: w.move ?? 20, sight: w.sight ?? 20, light: w.light ?? 20, sound: 20, flags: w.flags ?? {},
   })));
   const tokens = [];
   for (const t of json.tokens.filter((t) => !t.level)) {
@@ -251,6 +251,9 @@ const ids = await gm.evaluate(async () => {
     bricks,
     planks,
     plainWall: wallAt([400, 400, 1100, 400]), // w1: room A north wall
+    windowWall: wallAt([500, 1100, 500, 1600]), // room C west wall (sight: proximity)
+    halfWall: wallAt([1600, 900, 1800, 900]), // parapet, 3D height 0.5
+    glassWall: wallAt([1600, 1400, 1800, 1400]), // invisible wall (sight: none)
     sceneX: dim.sceneX,
     sceneY: dim.sceneY,
   };
@@ -487,6 +490,74 @@ await gm.evaluate(async () => {
 await sleep(800);
 check("back to map look", (await keyOf(ids.plainWall)) === "map");
 
+// Wall kinds from real Foundry walls
+const kinds = await gm.evaluate((ids) => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  const w = (id) => v.walls.get(id);
+  return {
+    window: !!w(ids.windowWall)?.isWindow && w(ids.windowWall).object.children.length === 3,
+    glass: !!w(ids.glassWall) && w(ids.glassWall).mesh.material.transparent,
+    half: Math.abs((w(ids.halfWall)?.height ?? 0) - 0.5) < 1e-6,
+  };
+}, ids);
+check("window wall drawn with an opening and glass", kinds.window);
+check("invisible wall drawn as glass", kinds.glass);
+check("half wall (3D height flag) drawn at half height", kinds.half);
+
+// Height field in the Wall config sheet
+await gm.evaluate((id) => canvas.scene.walls.get(id).sheet.render(true), ids.plainWall);
+await gm.waitForSelector('[name="flags.foundry-3d-view.height"]', { timeout: 15000 }).catch(() => {});
+const hasHeightField = await gm.evaluate(() => !!document.querySelector('[name="flags.foundry-3d-view.height"]'));
+check("Wall config sheet has the 3D height field", hasHeightField);
+if (hasHeightField) {
+  await gm.fill('[name="flags.foundry-3d-view.height"]', "0.25");
+  await gm.locator('[name="flags.foundry-3d-view.height"]').locator("xpath=ancestor::form[1]").locator('button[type="submit"]').first().click();
+  await sleep(1500);
+  const h = await gm.evaluate((id) => ({
+    flag: canvas.scene.walls.get(id).getFlag("foundry-3d-view", "height"),
+    view: game.modules.get("foundry-3d-view").api._controller.view.walls.get(id)?.height,
+  }), ids.plainWall);
+  check("saving the 3D height stores the flag and lowers the wall", h.flag === 0.25 && Math.abs(h.view - 0.25) < 1e-6, JSON.stringify(h));
+  await gm.evaluate((id) => canvas.scene.walls.get(id).unsetFlag("foundry-3d-view", "height"), ids.plainWall);
+}
+
+// Bulk tool: select walls in the Walls controls, open the tool, apply "half wall" + texture
+await gm.evaluate(() => game.modules.get("foundry-3d-view").api.close());
+await gm.evaluate(() => ui.controls.activate?.({ control: "walls" }));
+await sleep(800);
+await gm.evaluate((ids) => {
+  canvas.walls.releaseAll?.();
+  for (const id of [ids.plainWall, ids.corridorDoor]) canvas.walls.get(id)?.control({ releaseOthers: false });
+}, ids);
+const toolBtn = gm.locator('[data-tool="f3dWallStyle"]');
+check("bulk wall tool button in Walls controls", (await toolBtn.count()) > 0);
+if (await toolBtn.count()) {
+  await toolBtn.first().click();
+  await gm.waitForSelector('select[name="preset"]', { timeout: 10000 }).catch(() => {});
+  await gm.selectOption('select[name="preset"]', "half").catch(() => {});
+  await gm.evaluate((src) => {
+    const el = document.querySelector('dialog [name="texture"], .application [name="texture"]');
+    if (el) { el.value = src; el.querySelector?.("input") && (el.querySelector("input").value = src); }
+  }, ids.bricks);
+  await gm.locator('button[data-action="apply"]').first().click().catch(() => {});
+  await sleep(1500);
+  const bulk = await gm.evaluate((ids) => [ids.plainWall, ids.corridorDoor].map((id) => {
+    const d = canvas.scene.walls.get(id);
+    return { h: d.getFlag("foundry-3d-view", "height"), t: d.getFlag("foundry-3d-view", "texture") };
+  }), ids);
+  check("bulk tool applies height + texture to all selected walls", bulk.every((b) => b.h === 0.5 && b.t === ids.bricks), JSON.stringify(bulk));
+  await gm.evaluate(async (ids) => {
+    await canvas.scene.updateEmbeddedDocuments("Wall", [ids.plainWall, ids.corridorDoor].map((id) => ({
+      _id: id, "flags.foundry-3d-view.-=height": null, "flags.foundry-3d-view.-=texture": null,
+    })));
+    canvas.walls.releaseAll?.();
+  }, ids);
+}
+await gm.evaluate(() => ui.controls.activate?.({ control: "tokens" }));
+await gm.evaluate(() => game.modules.get("foundry-3d-view").api.open());
+await gm.waitForFunction(() => !!game.modules.get("foundry-3d-view").api._controller?.interaction, null, { timeout: 60000 });
+await sleep(1500);
+
 check("GM sees the hidden token as a ghost", await gm.evaluate((id) => {
   const t = game.modules.get("foundry-3d-view").api._controller.view.tokens.get(id);
   return t.group.visible && t.card.material.opacity < 1;
@@ -656,7 +727,10 @@ if (GEN >= "v14") {
       { name: "LvArcher", actorId: foe.id, x: X(20), y: Y(10), elevation: 10, level: upper.id, disposition: -1, texture: { src: canvas.scene.tokens.contents[1].texture.src } },
     ]);
     await scene.activate();
-    return { scene: scene.id, ground: ground.id, upper: upper.id, groundWall: walls[0].id, upperWall: walls[1].id, hero: toks[0].id, archer: toks[1].id };
+    // Look documents up by content: creation order is not guaranteed.
+    const byName = (n) => toks.find((t) => t.name === n)?.id;
+    const wallOn = (lid) => walls.find((w) => w.levels.has(lid))?.id;
+    return { scene: scene.id, ground: ground.id, upper: upper.id, groundWall: wallOn(ground.id), upperWall: wallOn(upper.id), hero: byName("LvHero"), archer: byName("LvArcher") };
   }, ids);
   const viewScene = async (page) => {
     await page.waitForFunction((id) => canvas.ready && canvas.scene?.id === id, lv.scene, { timeout: 30000 }).catch(async () => {

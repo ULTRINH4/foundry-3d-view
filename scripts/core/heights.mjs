@@ -105,8 +105,12 @@ export function wallBaseHeight(map, grid, c) {
   const off = grid.size * 0.25;
   const nx = (-(y2 - y1) / len) * off;
   const ny = ((x2 - x1) / len) * off;
-  const a = maxHeightAlongSegment(map, grid, [x1 + nx, y1 + ny, x2 + nx, y2 + ny]);
-  const b = maxHeightAlongSegment(map, grid, [x1 - nx, y1 - ny, x2 - nx, y2 - ny]);
+  // Pull the ends in a little so the squares just past each end of the wall don't count.
+  const inset = Math.min(len / 2 - 1e-6, grid.size * 0.25);
+  const ix = ((x2 - x1) / len) * inset, iy = ((y2 - y1) / len) * inset;
+  const s = [x1 + ix, y1 + iy, x2 - ix, y2 - iy];
+  const a = maxHeightAlongSegment(map, grid, [s[0] + nx, s[1] + ny, s[2] + nx, s[3] + ny]);
+  const b = maxHeightAlongSegment(map, grid, [s[0] - nx, s[1] - ny, s[2] - nx, s[3] - ny]);
   return Math.min(a, b);
 }
 

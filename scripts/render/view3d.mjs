@@ -10,7 +10,9 @@ import * as THREE from "../../vendor/three/three.module.js";
 import { OrbitControls } from "../../vendor/three/OrbitControls.js";
 import { makeGrid, canvasToWorld, unitsToWorldY, worldToCell, tokenCenter, cellRect, cellCenter, worldToCanvas } from "../core/coords.mjs";
 import { maxHeightUnderRect, wallBaseHeight, heightMapsEqual, normalizeHeightMap, getHeight } from "../core/heights.mjs";
-import { wallBox, doorPose, isRenderableWall, isDoor, showAsDoor, wallMaterialKey } from "../core/walls.mjs";
+import {
+  wallBox, doorPose, isRenderableWall, isDoor, showAsDoor, wallMaterialKey, glassMaterialKey, windowSections, WALL_KIND,
+} from "../core/walls.mjs";
 import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
 import { FOG } from "../core/vision.mjs";
 import {
@@ -28,6 +30,11 @@ const DEFAULTS = {
   maxLights: 8,
   // Wall look: "map" (inherit the scene image), "texture" (tiled wallTexture) or "flat".
   wallMode: "map",
+  windowTexture: "",
+  glassTexture: "",
+  invisibleWalls: "glass", // "glass" (see-through panel with volume) or "hide"
+  windowOpenings: true, // window walls get an opening with a glass pane
+  useLevelHeight: false, // v14: walls span their level's height
   wallTexture: "",
   doorTexture: "",
   wallTextureScale: 1, // squares covered by one repeat of a wall texture
@@ -135,7 +142,8 @@ export class View3D {
     this.model = null;
     this.grid = null;
     this.heights = null;
-    this.walls = new Map(); // id -> { data, object, mesh, center, height, cut, door? }
+    this.walls = new Map(); // id -> { data, object, mesh, center, height, cut, door? } (drawn walls)
+    this.allWalls = new Map(); // id -> wallData for every wall, drawn or not
     this.tokens = new Map(); // id -> standee entry
     this.tiles = new Map(); // id -> { data, group, mesh, overhead, opacity }
     this.levelFloors = []; // [{ index, mesh }]
@@ -338,6 +346,7 @@ export class View3D {
 
   clear() {
     for (const id of [...this.walls.keys()]) this.removeWall(id);
+    this.allWalls.clear();
     for (const b of this.wallBatches.values()) {
       b.mesh.removeFromParent();
       b.mesh.dispose();
@@ -427,7 +436,7 @@ export class View3D {
     this.heights = next;
     this._buildTerrain();
     // Snapshot first: upsertWall re-inserts keys, which a live Map iterator would visit forever.
-    for (const w of [...this.walls.values()].map((e) => e.data)) this.upsertWall(w);
+    for (const w of [...this.allWalls.values()]) this.upsertWall(w);
     for (const [, t] of this.tokens) this._placeToken(t, false);
     for (const t of [...this.tiles.values()].map((e) => e.data)) this.upsertTile(t);
   }
@@ -480,21 +489,26 @@ export class View3D {
   }
 
   upsertWall(w) {
+    this.allWalls.set(w.id, w); // every wall, drawn or not, so style changes can bring them back
     const existing = this.walls.get(w.id);
-    if (!isRenderableWall(w)) {
-      if (existing) this.removeWall(w.id);
+    if (!isRenderableWall(w, { invisible: this.options.invisibleWalls })) {
+      if (existing) this._dropWall(w.id);
       return;
     }
-    const opts = { height: this.options.wallHeight, base: this._wallBase(w) };
+    const lv = this.options.useLevelHeight ? this.model?.levels?.[w.levelIndex ?? 0] : null;
+    const opts = { height: this.options.wallHeight, base: this._wallBase(w), level: lv ? { bottom: lv.bottom, top: lv.top } : null };
     const asDoor = isDoor(w) && showAsDoor(w, this.options.isGM);
     const key = wallMaterialKey(w, {
       mode: this.options.wallMode,
       wallTexture: this.options.wallTexture,
       doorTexture: this.options.doorTexture,
+      windowTexture: this.options.windowTexture,
       asDoor,
       hasMap: !!this.bgTexture,
     });
     const doorMat = this._wallMaterial(key);
+    const isGlass = w.kind === WALL_KIND.INVISIBLE;
+    const isWindow = w.kind === WALL_KIND.WINDOW && this.options.windowOpenings;
 
     // Doors keep their object so the swing can animate; anything else is rebuilt (cheap).
     if (existing && existing.door && asDoor) {
@@ -511,14 +525,14 @@ export class View3D {
       return;
     }
     const cut = existing?.cut ?? 1;
-    if (!asDoor && existing?.instanced && existing.batchKey === key) {
+    if (!asDoor && !isGlass && !isWindow && existing?.instanced && existing.batchKey === key) {
       // Reuse the instance slot.
       const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
       Object.assign(existing, { data: w, box, height: box.top - box.bottom, center: { x: box.cx, z: box.cz } });
       this._writeWallMatrix(existing);
       return;
     }
-    if (existing) this.removeWall(w.id);
+    if (existing) this._dropWall(w.id);
 
     let entry;
     if (asDoor) {
@@ -536,6 +550,47 @@ export class View3D {
       this.wallGroup.add(pivot);
       const box = wallBox(w, this.grid, opts);
       entry = { data: w, object: pivot, mesh, height, cut, materialKey: key, center: { x: box.cx, z: box.cz }, door: { pivot, target: pose.angle } };
+    } else if (isGlass) {
+      // Invisible wall: a see-through panel so it still has volume in 3D.
+      const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness * 0.5 });
+      const gkey = glassMaterialKey(w, { glassTexture: this.options.glassTexture });
+      const mesh = new THREE.Mesh(this.boxGeometry, this._wallMaterial(gkey));
+      const height = box.top - box.bottom;
+      mesh.position.set(box.cx, box.bottom, box.cz);
+      mesh.rotation.y = box.angle;
+      mesh.scale.set(box.length, height * cut, box.thickness);
+      mesh.renderOrder = 3;
+      mesh.userData.wallId = w.id;
+      this.wallGroup.add(mesh);
+      entry = { data: w, object: mesh, mesh, height, cut, materialKey: gkey, center: { x: box.cx, z: box.cz } };
+    } else if (isWindow) {
+      // Window: solid below the sill and above the lintel, a glass pane in the opening.
+      const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
+      const height = box.top - box.bottom;
+      const sec = windowSections(0, height);
+      const group = new THREE.Group();
+      group.position.set(box.cx, box.bottom, box.cz);
+      group.rotation.y = box.angle;
+      const part = (s, mat, thick) => {
+        const m = new THREE.Mesh(this.boxGeometry, mat);
+        m.position.y = s.bottom;
+        m.scale.set(box.length + (thick === box.thickness ? box.thickness : 0), s.top - s.bottom, thick);
+        m.userData.wallId = w.id;
+        group.add(m);
+        return m;
+      };
+      const solid = this._wallMaterial(key);
+      const gkey = glassMaterialKey(w, { glassTexture: this.options.glassTexture });
+      part(sec.lower, solid, box.thickness);
+      part(sec.upper, solid, box.thickness);
+      const pane = part(sec.glass, this._wallMaterial(gkey), box.thickness * 0.3);
+      pane.renderOrder = 3;
+      group.scale.y = cut;
+      this.wallGroup.add(group);
+      entry = {
+        data: w, object: group, mesh: group, height, cut, materialKey: key, isWindow: true,
+        center: { x: box.cx, z: box.cz }, applyCut: (c) => (group.scale.y = c),
+      };
     } else {
       const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
       const batch = this._ensureWallBatch(key, this._wallCount(key) + 1);
@@ -550,7 +605,14 @@ export class View3D {
     this.walls.set(w.id, entry);
   }
 
+  /** The wall was deleted from the scene. */
   removeWall(id) {
+    this.allWalls.delete(id);
+    this._dropWall(id);
+  }
+
+  /** Remove a wall's 3D object (it may come back on the next upsert). */
+  _dropWall(id) {
     const w = this.walls.get(id);
     if (!w) return;
     this.walls.delete(id);
@@ -593,39 +655,57 @@ export class View3D {
     if (key === "map") {
       mat = this._fogged(new THREE.MeshLambertMaterial({ map: this.bgTexture, color: 0xd8d8d8 }), "dilate",
         { key: "map", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_MAP_VERTEX });
+    } else if (key === "glass" || key.startsWith("glass:")) {
+      // See-through panels (invisible walls, window panes). A texture keeps its own alpha.
+      const src = key.startsWith("glass:") ? key.slice(6) : null;
+      mat = this._fogged(new THREE.MeshLambertMaterial({
+        color: src ? 0xffffff : 0xbfe3ff, transparent: true, opacity: src ? 0.9 : 0.28,
+        depthWrite: false, side: THREE.DoubleSide,
+      }), "dilate", src ? { key: "tex", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_TEX_VERTEX } : null);
+      if (src) this._loadWallTexture(key, mat, src);
     } else {
       const src = key.slice(4);
       mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate",
         { key: "tex", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_TEX_VERTEX });
-      let resolved = src;
-      try {
-        resolved = this.options.resolveSrc(src) ?? src;
-      } catch {
-        /* keep the raw path */
-      }
-      this.loadTexture(resolved).then((tex) => {
-        if (this.wallMaterials.get(key) !== mat) return;
-        // Tiling needs repeat wrapping; clone so a texture shared with tokens/tiles keeps clamping.
-        const t = tex.clone();
-        t.wrapS = t.wrapT = THREE.RepeatWrapping;
-        t.needsUpdate = true;
-        mat.map = t;
-        mat.needsUpdate = true;
-      }).catch((e) => console.warn("foundry-3d-view | wall texture failed", src, e));
+      this._loadWallTexture(key, mat, src);
     }
     this.wallMaterials.set(key, mat);
     return mat;
   }
 
+  /** Load a tiling texture into a cached wall material. */
+  _loadWallTexture(key, mat, src) {
+    let resolved = src;
+    try {
+      resolved = this.options.resolveSrc(src) ?? src;
+    } catch {
+      /* keep the raw path */
+    }
+    this.loadTexture(resolved).then((tex) => {
+      if (this.wallMaterials.get(key) !== mat) return;
+      // Tiling needs repeat wrapping; clone so a texture shared with tokens/tiles keeps clamping.
+      const t = tex.clone();
+      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.needsUpdate = true;
+      mat.map = t;
+      mat.needsUpdate = true;
+    }).catch((e) => console.warn("foundry-3d-view | wall texture failed", src, e));
+  }
+
   /** Change how walls look and rebuild them. */
-  setWallStyle({ wallMode, wallTexture, doorTexture, wallTextureScale } = {}) {
+  setWallStyle({ wallMode, wallTexture, doorTexture, wallTextureScale, windowTexture, glassTexture, invisibleWalls, windowOpenings, useLevelHeight } = {}) {
+    if (windowTexture !== undefined) this.options.windowTexture = windowTexture || "";
+    if (glassTexture !== undefined) this.options.glassTexture = glassTexture || "";
+    if (invisibleWalls !== undefined) this.options.invisibleWalls = invisibleWalls;
+    if (windowOpenings !== undefined) this.options.windowOpenings = !!windowOpenings;
+    if (useLevelHeight !== undefined) this.options.useLevelHeight = !!useLevelHeight;
     if (wallMode !== undefined) this.options.wallMode = wallMode;
     if (wallTexture !== undefined) this.options.wallTexture = wallTexture || "";
     if (doorTexture !== undefined) this.options.doorTexture = doorTexture || "";
     if (wallTextureScale !== undefined) this.options.wallTextureScale = Number(wallTextureScale) || 1;
     this.wallUniforms.f3dTile.value = 1 / (this.options.wallTextureScale || 1);
-    const all = [...this.walls.values()].map((e) => e.data);
-    for (const w of all) this.removeWall(w.id);
+    const all = [...this.allWalls.values()];
+    for (const w of all) this._dropWall(w.id);
     for (const w of all) this.upsertWall(w);
   }
 
@@ -1099,7 +1179,11 @@ export class View3D {
     const targets = [this.terrainMesh, ...this.levelFloors.filter((f) => f.mesh.visible).map((f) => f.mesh)];
     for (const [, t] of this.tokens) if (t.group.visible) targets.push(t.card, t.base);
     for (const b of this.wallBatches.values()) if (b.mesh.count) targets.push(b.mesh);
-    for (const [, w] of this.walls) if (w.door && w.object.visible) targets.push(w.mesh);
+    for (const [, w] of this.walls) {
+      if (w.instanced || !w.object.visible) continue;
+      if (w.door) targets.push(w.mesh);
+      else w.object.traverse((o) => o.isMesh && targets.push(o));
+    }
     const hits = this.raycaster.intersectObjects(targets, false);
     for (const hit of hits) {
       const ud = hit.object.userData;
@@ -1247,6 +1331,7 @@ export class View3D {
       if (Math.abs(goal - w.cut) > 1e-3) {
         w.cut += (goal - w.cut) * k;
         if (w.instanced) this._writeWallMatrix(w);
+        else if (w.applyCut) w.applyCut(w.cut);
         else w.mesh.scale.y = w.height * w.cut;
       }
     }
