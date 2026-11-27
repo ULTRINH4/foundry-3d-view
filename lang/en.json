@@ -22,5 +22,16 @@
   "F3D.Settings.HeightStep.Name": "Height paint step (squares)",
   "F3D.Settings.HeightStep.Hint": "How much one click raises or lowers a square, in grid squares (0.5 on a 5 ft grid = 2.5 ft).",
   "F3D.Settings.ShowGrid.Name": "Show grid in 3D",
-  "F3D.Settings.ShowGrid.Hint": "Draw grid lines on top of the 3D terrain."
+  "F3D.Settings.ShowGrid.Hint": "Draw grid lines on top of the 3D terrain.",
+  "F3D.HUD.Cutaway": "Cutaway walls",
+  "F3D.HUD.Roofs": "Roofs",
+  "F3D.HUD.Levels": "Visible levels",
+  "F3D.HUD.AllLevels": "All levels",
+  "F3D.HUD.Brush": "Brush",
+  "F3D.HUD.Undo": "Undo",
+  "F3D.Notify.Paused": "The game is paused.",
+  "F3D.Notify.Blocked": "A wall blocks that move.",
+  "F3D.Notify.DoorLocked": "This door is locked.",
+  "F3D.Settings.Fog3d.Name": "Fog of war in 3D",
+  "F3D.Settings.Fog3d.Hint": "Players only see the squares their tokens can see (explored squares stay dimmed). Uses the scene's token vision setting."
 }

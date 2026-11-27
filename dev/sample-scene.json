@@ -225,6 +225,38 @@
     1000,
     1600
    ]
+  },
+  {
+   "_id": "w24",
+   "c": [
+    2000,
+    1000,
+    2400,
+    1000
+   ],
+   "level": "balcony",
+   "flags": {
+    "wall-height": {
+     "bottom": 10,
+     "top": 13
+    }
+   }
+  },
+  {
+   "_id": "w25",
+   "c": [
+    2000,
+    1000,
+    2000,
+    1500
+   ],
+   "level": "balcony",
+   "flags": {
+    "wall-height": {
+     "bottom": 10,
+     "top": 13
+    }
+   }
   }
  ],
  "tokens": [
@@ -237,7 +269,12 @@
    "height": 1,
    "elevation": 0,
    "disposition": 1,
-   "src": "gen:hero"
+   "src": "gen:hero",
+   "light": {
+    "dim": 30,
+    "bright": 15,
+    "color": "#ffb35c"
+   }
   },
   {
    "_id": "mage",
@@ -283,8 +320,99 @@
    "disposition": -1,
    "src": "gen:ghost",
    "hidden": true
+  },
+  {
+   "_id": "archer",
+   "name": "Archer",
+   "x": 2200,
+   "y": 1200,
+   "width": 1,
+   "height": 1,
+   "elevation": 10,
+   "disposition": -1,
+   "src": "gen:archer",
+   "level": "balcony"
   }
  ],
+ "tiles": [
+  {
+   "_id": "rug",
+   "x": 600,
+   "y": 500,
+   "width": 300,
+   "height": 200,
+   "rotation": 15,
+   "texture": {
+    "src": "gen:rug"
+   },
+   "elevation": 0,
+   "sort": 1
+  },
+  {
+   "_id": "roofC",
+   "x": 500,
+   "y": 1100,
+   "width": 500,
+   "height": 500,
+   "texture": {
+    "src": "gen:roof"
+   },
+   "elevation": 20,
+   "sort": 2
+  }
+ ],
+ "lights": [
+  {
+   "_id": "brazier",
+   "x": 2150,
+   "y": 650,
+   "config": {
+    "dim": 40,
+    "bright": 20,
+    "color": "#ff7a2e"
+   }
+  },
+  {
+   "_id": "torchB",
+   "x": 1550,
+   "y": 1450,
+   "config": {
+    "dim": 25,
+    "bright": 10,
+    "color": "#ffd38a"
+   }
+  },
+  {
+   "_id": "torchC",
+   "x": 750,
+   "y": 1550,
+   "config": {
+    "dim": 20,
+    "bright": 10,
+    "color": "#9ad0ff"
+   }
+  }
+ ],
+ "levels": [
+  {
+   "id": "ground",
+   "name": "Ground",
+   "bottom": 0,
+   "background": {
+    "src": "gen:dungeon"
+   }
+  },
+  {
+   "id": "balcony",
+   "name": "Balcony",
+   "bottom": 10,
+   "background": {
+    "src": "gen:balcony"
+   }
+  }
+ ],
+ "darkness": 0.55,
+ "foregroundElevation": 20,
  "heights": {
   "cols": 24,
   "rows": 16,

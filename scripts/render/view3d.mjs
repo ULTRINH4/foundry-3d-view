@@ -1,23 +1,83 @@
 /**
  * three.js renderer for a scene model (see core/scene-model.mjs). Knows nothing about Foundry:
  * the Foundry adapter and the dev page both drive it through this API.
+ *
+ * Features: terrain with per-square heights, walls and animated doors, tokens as paper standees,
+ * per-square fog of war, lights + darkness, wall cutaway toward the camera, tiles (floor + roofs),
+ * stacked levels, picking (tokens/doors/cells), selection rings and a ruler.
  */
 import * as THREE from "../../vendor/three/three.module.js";
 import { OrbitControls } from "../../vendor/three/OrbitControls.js";
-import { makeGrid, canvasToWorld, unitsToWorldY, worldToCell, tokenCenter, cellRect } from "../core/coords.mjs";
-import { maxHeightUnderRect, wallBaseHeight, heightMapsEqual, normalizeHeightMap } from "../core/heights.mjs";
+import { makeGrid, canvasToWorld, unitsToWorldY, worldToCell, tokenCenter, cellRect, cellCenter, worldToCanvas } from "../core/coords.mjs";
+import { maxHeightUnderRect, wallBaseHeight, heightMapsEqual, normalizeHeightMap, getHeight } from "../core/heights.mjs";
 import { wallBox, doorPose, isRenderableWall, isDoor, showAsDoor } from "../core/walls.mjs";
 import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
+import { FOG } from "../core/vision.mjs";
+import {
+  isWallTowardCamera, selectLights, ambientForDarkness, isOverheadTile, tilePlacement, tileContainsPoint, levelFloorY,
+} from "../core/scene-extras.mjs";
 
 const DEFAULTS = {
   wallHeight: 1.5, // world units (squares)
   wallThickness: 0.12,
   showGrid: true,
   isGM: false,
+  cutaway: false,
+  showRoofs: true,
+  cutawayHeight: 0.22, // world units walls are lowered to
+  maxLights: 8,
   pixelRatio: Math.min(globalThis.devicePixelRatio ?? 1, 2),
 };
 
+const _m = new THREE.Matrix4();
+const _p = new THREE.Vector3();
+const _q = new THREE.Quaternion();
+const _s = new THREE.Vector3();
+const _up = new THREE.Vector3(0, 1, 0);
+
 const DISPOSITION_COLORS = { "-2": 0x8e44ad, "-1": 0xc0392b, 0: 0xd4ac0d, 1: 0x2e86c1 };
+const FOG_VALUE = { [FOG.UNSEEN]: 0, [FOG.EXPLORED]: 110, [FOG.VISIBLE]: 255 };
+
+const FOG_VERTEX_PARS = "varying vec3 vF3dWorld;\nvarying vec3 vF3dNormal;\n";
+const FOG_FRAGMENT_PARS = `
+uniform sampler2D f3dFogMap;
+uniform float f3dFogOn;
+uniform vec2 f3dFogMin;
+uniform vec2 f3dFogSize;
+varying vec3 vF3dWorld;
+varying vec3 vF3dNormal;
+vec2 f3dFogUV() {
+  // Sample slightly in front of the surface so a wall face takes the fog of the room it faces.
+  vec2 p = vF3dWorld.xz + vF3dNormal.xz * 0.35;
+  return (p - f3dFogMin) / f3dFogSize;
+}
+float f3dFogValue() {
+  vec2 uv = f3dFogUV();
+  return (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) ? 0.0 : texture2D(f3dFogMap, uv).r;
+}
+// Fog state of one square (no filtering): crisp test for hiding unseen geometry.
+float f3dFogAt(vec2 cell) {
+  if (cell.x < 0.0 || cell.y < 0.0 || cell.x >= f3dFogSize.x || cell.y >= f3dFogSize.y) return 0.0;
+  return texture2D(f3dFogMap, (cell + 0.5) / f3dFogSize).r;
+}
+float f3dFogCell() {
+  return f3dFogAt(floor(f3dFogUV() * f3dFogSize));
+}
+// Same, but a square next to a seen square counts as seen: walls bounding what you can see stay whole.
+float f3dFogCellDilated() {
+  vec2 c = floor(f3dFogUV() * f3dFogSize);
+  return max(f3dFogAt(c), max(max(f3dFogAt(c + vec2(1.0, 0.0)), f3dFogAt(c - vec2(1.0, 0.0))),
+                              max(f3dFogAt(c + vec2(0.0, 1.0)), f3dFogAt(c - vec2(0.0, 1.0)))));
+}
+vec3 f3dApplyFog(vec3 c) {
+  if (f3dFogOn < 0.5) return c;
+  float v = f3dFogValue();
+  float lum = dot(c, vec3(0.299, 0.587, 0.114));
+  vec3 explored = vec3(lum) * 0.5;
+  vec3 col = mix(explored, c, smoothstep(0.6, 0.95, v));
+  return col * smoothstep(0.0, 0.35, v);
+}
+`;
 
 export class View3D {
   /**
@@ -30,12 +90,19 @@ export class View3D {
     this.model = null;
     this.grid = null;
     this.heights = null;
-    this.walls = new Map(); // id -> { data, object, door?: {pivot, target} }
-    this.tokens = new Map(); // id -> { data, group, yaw, pivot, card, base, target:{x,y,z}, visible }
+    this.walls = new Map(); // id -> { data, object, mesh, center, height, cut, door? }
+    this.tokens = new Map(); // id -> standee entry
+    this.tiles = new Map(); // id -> { data, group, mesh, overhead, opacity }
+    this.levelFloors = []; // [{ index, mesh }]
+    this.levelCutoff = Infinity;
+    this.lights = [];
+    this.darkness = 0;
+    this.roofFocus = []; // canvas points; roofs above them fade out
     this.textureCache = new Map();
     this.topDown = false;
     this._saved = null;
     this._disposed = false;
+    this._lightTimer = 0;
 
     this.renderer = new THREE.WebGLRenderer({ antialias: true, alpha: false, preserveDrawingBuffer: !!options.preserveDrawingBuffer });
     this.renderer.setPixelRatio(this.options.pixelRatio);
@@ -51,27 +118,62 @@ export class View3D {
     this.controls.maxPolarAngle = THREE.MathUtils.degToRad(85);
     this.controls.minDistance = 2;
 
-    this.scene.add(new THREE.HemisphereLight(0xffffff, 0x404050, 1.6));
-    const sun = new THREE.DirectionalLight(0xffffff, 1.6);
-    sun.position.set(-0.6, 1, 0.35);
-    this.scene.add(sun);
+    this.hemi = new THREE.HemisphereLight(0xffffff, 0x404050, 1.6);
+    this.sun = new THREE.DirectionalLight(0xffffff, 1.6);
+    this.sun.position.set(-0.6, 1, 0.35);
+    this.scene.add(this.hemi, this.sun);
+    // Fixed pool so the shader light count never changes (no recompiles while lights move).
+    this.lightPool = [];
+    for (let i = 0; i < this.options.maxLights; i++) {
+      const pl = new THREE.PointLight(0xffffff, 0, 1, 1);
+      this.scene.add(pl);
+      this.lightPool.push(pl);
+    }
 
     this.world = new THREE.Group();
     this.scene.add(this.world);
     this.wallGroup = new THREE.Group();
     this.tokenGroup = new THREE.Group();
-    this.world.add(this.wallGroup, this.tokenGroup);
+    this.tileGroup = new THREE.Group();
+    this.overlayGroup = new THREE.Group();
+    this.world.add(this.wallGroup, this.tileGroup, this.tokenGroup, this.overlayGroup);
+
+    // Fog of war: one texel per grid square, shared by every fog-aware material.
+    this.fogUniforms = {
+      f3dFogMap: { value: null },
+      f3dFogOn: { value: 0 },
+      f3dFogMin: { value: new THREE.Vector2() },
+      f3dFogSize: { value: new THREE.Vector2(1, 1) },
+    };
 
     this.materials = {
-      wall: new THREE.MeshLambertMaterial({ color: 0x8a8580 }),
-      wallTop: new THREE.MeshLambertMaterial({ color: 0x55504c }),
-      door: new THREE.MeshLambertMaterial({ color: 0x8b5a2b }),
-      secretDoor: new THREE.MeshLambertMaterial({ color: 0x7d6a8c }),
-      gridLine: new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 }),
+      wall: this._fogged(new THREE.MeshLambertMaterial({ color: 0x8a8580, vertexColors: true }), "dilate"),
+      door: this._fogged(new THREE.MeshLambertMaterial({ color: 0x8b5a2b }), "dilate"),
+      secretDoor: this._fogged(new THREE.MeshLambertMaterial({ color: 0x7d6a8c }), "dilate"),
+      gridLine: this._fogged(new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 })),
       hover: new THREE.LineBasicMaterial({ color: 0xffe066 }),
+      ruler: new THREE.LineBasicMaterial({ color: 0xffe066, depthTest: false, transparent: true }),
+      ring: new THREE.MeshBasicMaterial({ color: 0xffd34d, side: THREE.DoubleSide, transparent: true, opacity: 0.95, depthWrite: false }),
     };
     this.boxGeometry = new THREE.BoxGeometry(1, 1, 1);
     this.boxGeometry.translate(0, 0.5, 0); // origin at the bottom face
+    // Plain walls share one InstancedMesh (a single draw call); the top face is darker through
+    // vertex colours so no second material is needed.
+    this.wallGeometry = this.boxGeometry.clone();
+    const nrm = this.wallGeometry.attributes.normal;
+    const vc = new Float32Array(nrm.count * 3);
+    for (let i = 0; i < nrm.count; i++) vc.fill(nrm.getY(i) > 0.5 ? 0.62 : 1, i * 3, i * 3 + 3);
+    this.wallGeometry.setAttribute("color", new THREE.BufferAttribute(vc, 3));
+    this.wallBatch = null;
+    this.planeGeometry = new THREE.PlaneGeometry(1, 1);
+    this.planeGeometry.rotateX(-Math.PI / 2); // lying flat, facing up
+    this.ringGeometry = new THREE.RingGeometry(0.47, 0.56, 40);
+    this.ringGeometry.rotateX(-Math.PI / 2);
+
+    this.rulerLabel = document.createElement("div");
+    this.rulerLabel.className = "f3d-ruler-label";
+    this.rulerLabel.style.display = "none";
+    container.appendChild(this.rulerLabel);
 
     this.raycaster = new THREE.Raycaster();
     this._resizeObserver = new ResizeObserver(() => this.resize());
@@ -81,6 +183,39 @@ export class View3D {
     this._last = performance.now();
     this._loop = this._loop.bind(this);
     this.renderer.setAnimationLoop(this._loop);
+  }
+
+  /**
+   * Inject the fog-of-war lookup into a built-in material's shaders.
+   * @param {false|"strict"|"dilate"} [hideUnseen]  discard (instead of blacken) where never seen, so
+   *   unexplored geometry neither leaks layout nor blocks the view. "dilate" (walls) keeps geometry
+   *   next to seen squares; "strict" (roofs, upper floors) only over seen squares.
+   */
+  _fogged(material, hideUnseen = false) {
+    material.onBeforeCompile = (shader) => {
+      Object.assign(shader.uniforms, this.fogUniforms);
+      // Basic/line materials only declare objectNormal under some defines; Lambert always does.
+      const hasNormal = !!material.isMeshLambertMaterial;
+      shader.vertexShader = FOG_VERTEX_PARS + shader.vertexShader.replace(
+        "#include <project_vertex>",
+        `#include <project_vertex>
+        #ifdef USE_INSTANCING
+          vF3dWorld = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).xyz;
+          vF3dNormal = ${hasNormal ? "normalize(mat3(modelMatrix) * mat3(instanceMatrix) * objectNormal)" : "vec3(0.0, 1.0, 0.0)"};
+        #else
+          vF3dWorld = (modelMatrix * vec4(transformed, 1.0)).xyz;
+          vF3dNormal = ${hasNormal ? "normalize(mat3(modelMatrix) * objectNormal)" : "vec3(0.0, 1.0, 0.0)"};
+        #endif`,
+      );
+      shader.fragmentShader = FOG_FRAGMENT_PARS + shader.fragmentShader.replace(
+        "#include <opaque_fragment>",
+        "#include <opaque_fragment>\n" +
+          (hideUnseen ? `  if (f3dFogOn > 0.5 && ${hideUnseen === "dilate" ? "f3dFogCellDilated" : "f3dFogCell"}() < 0.04) discard;\n` : "") +
+          "  gl_FragColor.rgb = f3dApplyFog(gl_FragColor.rgb);",
+      );
+    };
+    material.customProgramCacheKey = () => `f3d-fog-${hideUnseen || "show"}`;
+    return material;
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -94,12 +229,24 @@ export class View3D {
     this.grid = model.grid.cols !== undefined ? model.grid : makeGrid(model.grid);
     this.heights = normalizeHeightMap(model.heights, this.grid.cols, this.grid.rows);
     this.scene.background = new THREE.Color(model.backgroundColor ?? "#1b1b1f");
+    const g = this.grid;
+
+    // Fog texture sized to the grid.
+    const fogData = new Uint8Array(g.cols * g.rows).fill(255);
+    const fogTex = new THREE.DataTexture(fogData, g.cols, g.rows, THREE.RedFormat, THREE.UnsignedByteType);
+    fogTex.magFilter = THREE.LinearFilter;
+    fogTex.minFilter = THREE.LinearFilter;
+    fogTex.needsUpdate = true;
+    this.fogUniforms.f3dFogMap.value?.dispose();
+    this.fogUniforms.f3dFogMap.value = fogTex;
+    const min = canvasToWorld(g, g.sceneX, g.sceneY);
+    this.fogUniforms.f3dFogMin.value.set(min.x, min.z);
+    this.fogUniforms.f3dFogSize.value.set(g.cols, g.rows);
 
     // Padding ground (outside the scene rect), slightly below 0 to avoid z-fighting.
-    const g = this.grid;
     const pad = new THREE.Mesh(
       new THREE.PlaneGeometry(g.width / g.size, g.height / g.size),
-      new THREE.MeshLambertMaterial({ color: new THREE.Color(model.backgroundColor ?? "#1b1b1f").multiplyScalar(0.8) }),
+      this._fogged(new THREE.MeshLambertMaterial({ color: new THREE.Color(model.backgroundColor ?? "#1b1b1f").multiplyScalar(0.8) })),
     );
     pad.rotation.x = -Math.PI / 2;
     const padCenter = canvasToWorld(g, g.width / 2, g.height / 2);
@@ -113,25 +260,37 @@ export class View3D {
     }) : null;
     if (this._disposed) return;
     this.terrainMaterials = [
-      new THREE.MeshLambertMaterial({ map: this.bgTexture, color: this.bgTexture ? 0xffffff : 0x556b2f }),
-      new THREE.MeshLambertMaterial({ map: this.bgTexture, color: this.bgTexture ? 0x9a9a9a : 0x3b4a20 }),
+      this._fogged(new THREE.MeshLambertMaterial({ map: this.bgTexture, color: this.bgTexture ? 0xffffff : 0x556b2f })),
+      this._fogged(new THREE.MeshLambertMaterial({ map: this.bgTexture, color: this.bgTexture ? 0x9a9a9a : 0x3b4a20 })),
     ];
     this._buildTerrain();
+    await this._buildLevelFloors(model.levels ?? []);
 
     for (const w of model.walls ?? []) this.upsertWall(w);
-    await Promise.all((model.tokens ?? []).map((t) => this.upsertToken(t, { snap: true })));
+    await Promise.all([
+      ...(model.tokens ?? []).map((t) => this.upsertToken(t, { snap: true })),
+      ...(model.tiles ?? []).map((t) => this.upsertTile(t)),
+    ]);
+    this.setLights(model.lights ?? [], model.darkness ?? 0);
     this.resetCamera();
   }
 
   clear() {
     for (const id of [...this.walls.keys()]) this.removeWall(id);
     for (const id of [...this.tokens.keys()]) this.removeToken(id);
-    for (const obj of [this.terrainMesh, this.gridLines, this.padMesh, this.hoverLine]) {
+    for (const id of [...this.tiles.keys()]) this.removeTile(id);
+    for (const f of this.levelFloors) {
+      f.mesh.removeFromParent();
+      f.mesh.material.dispose();
+    }
+    this.levelFloors = [];
+    for (const obj of [this.terrainMesh, this.gridLines, this.padMesh, this.hoverLine, this.rulerLine]) {
       if (!obj) continue;
       obj.removeFromParent();
       obj.geometry?.dispose();
     }
-    this.terrainMesh = this.gridLines = this.padMesh = this.hoverLine = null;
+    this.padMesh?.material?.dispose();
+    this.terrainMesh = this.gridLines = this.padMesh = this.hoverLine = this.rulerLine = null;
     this.terrainMaterials?.forEach((m) => m.dispose());
   }
 
@@ -167,7 +326,29 @@ export class View3D {
     }
   }
 
-  /** Replace terrain heights; walls and tokens are re-seated. */
+  /** Upper levels (index >= 1) are flat floors textured with the level's background. */
+  async _buildLevelFloors(levels) {
+    const g = this.grid;
+    for (let i = 1; i < levels.length; i++) {
+      const lv = levels[i];
+      const src = lv.background?.src;
+      const tex = src ? await this.loadTexture(src).catch(() => null) : null;
+      if (!tex) continue;
+      const mat = this._fogged(new THREE.MeshLambertMaterial({ map: tex, transparent: true, alphaTest: 0.5 }), "strict");
+      const mesh = new THREE.Mesh(this.planeGeometry, mat);
+      const bg = lv.background;
+      const c = canvasToWorld(g, (bg.x ?? g.sceneX) + (bg.width ?? g.sceneWidth) / 2, (bg.y ?? g.sceneY) + (bg.height ?? g.sceneHeight) / 2);
+      mesh.position.set(c.x, levelFloorY(lv, g), c.z);
+      mesh.scale.set((bg.width ?? g.sceneWidth) / g.size, 1, (bg.height ?? g.sceneHeight) / g.size);
+      mesh.userData.levelIndex = i;
+      mesh.name = "levelFloor";
+      this.world.add(mesh);
+      this.levelFloors.push({ index: i, mesh });
+    }
+    this._applyLevelCutoff();
+  }
+
+  /** Replace terrain heights; walls, tokens and tiles are re-seated. */
   setHeights(heights) {
     if (!this.grid) return;
     const next = normalizeHeightMap(heights, this.grid.cols, this.grid.rows);
@@ -177,15 +358,55 @@ export class View3D {
     // Snapshot first: upsertWall re-inserts keys, which a live Map iterator would visit forever.
     for (const w of [...this.walls.values()].map((e) => e.data)) this.upsertWall(w);
     for (const [, t] of this.tokens) this._placeToken(t, false);
+    for (const t of [...this.tiles.values()].map((e) => e.data)) this.upsertTile(t);
   }
 
   getHeights() {
     return this.heights;
   }
 
+  /** Terrain height (world Y) of a canvas point on the base level. */
+  terrainYAt(px, py) {
+    const g = this.grid;
+    const col = Math.floor((px - g.sceneX) / g.size);
+    const row = Math.floor((py - g.sceneY) / g.size);
+    return unitsToWorldY(g, getHeight(this.heights, col, row));
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Levels                                                                                   */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /** Show only levels with index <= `index` (Infinity = all). */
+  setLevelCutoff(index) {
+    this.levelCutoff = index ?? Infinity;
+    this._applyLevelCutoff();
+  }
+
+  _levelVisible(i) {
+    return (i ?? 0) <= this.levelCutoff;
+  }
+
+  _applyLevelCutoff() {
+    for (const f of this.levelFloors) f.mesh.visible = this._levelVisible(f.index);
+    for (const [, w] of this.walls) {
+      if (w.instanced) this._writeWallMatrix(w);
+      else w.object.visible = this._levelVisible(w.data.levelIndex);
+    }
+    for (const [, t] of this.tiles) t.levelHidden = !this._levelVisible(t.data.levelIndex);
+    for (const [, t] of this.tokens) t.levelHidden = !this._levelVisible(t.data.levelIndex);
+    for (const [, t] of this.tokens) this._applyTokenVisible(t);
+  }
+
   /* ---------------------------------------------------------------------------------------- */
   /* Walls & doors                                                                            */
   /* ---------------------------------------------------------------------------------------- */
+
+  _wallBase(w) {
+    const li = w.levelIndex ?? 0;
+    if (li > 0 && this.model?.levels?.[li]) return levelFloorY(this.model.levels[li], this.grid);
+    return unitsToWorldY(this.grid, wallBaseHeight(this.heights, this.grid, w.c));
+  }
 
   upsertWall(w) {
     const existing = this.walls.get(w.id);
@@ -193,56 +414,141 @@ export class View3D {
       if (existing) this.removeWall(w.id);
       return;
     }
-    const base = unitsToWorldY(this.grid, wallBaseHeight(this.heights, this.grid, w.c));
-    const opts = { height: this.options.wallHeight, base };
+    const opts = { height: this.options.wallHeight, base: this._wallBase(w) };
     const asDoor = isDoor(w) && showAsDoor(w, this.options.isGM);
+    const doorMat = w.door === 2 ? this.materials.secretDoor : this.materials.door;
 
     // Doors keep their object so the swing can animate; anything else is rebuilt (cheap).
     if (existing && existing.door && asDoor) {
       existing.data = w;
       const pose = doorPose(w, this.grid, opts);
       existing.door.pivot.position.set(pose.hx, pose.bottom, pose.hz);
-      existing.door.mesh.scale.set(pose.length, pose.top - pose.bottom, this.options.wallThickness * 0.7);
-      existing.door.mesh.position.x = pose.length / 2;
-      existing.door.mesh.material = w.door === 2 ? this.materials.secretDoor : this.materials.door;
+      existing.height = pose.top - pose.bottom;
+      existing.mesh.scale.set(pose.length, existing.height * existing.cut, this.options.wallThickness * 0.7);
+      existing.mesh.position.x = pose.length / 2;
+      existing.mesh.material = doorMat;
       existing.door.target = pose.angle;
+      existing.object.visible = this._levelVisible(w.levelIndex);
+      return;
+    }
+    const cut = existing?.cut ?? 1;
+    if (!asDoor && existing?.instanced) {
+      // Reuse the instance slot.
+      const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
+      Object.assign(existing, { data: w, box, height: box.top - box.bottom, center: { x: box.cx, z: box.cz } });
+      this._writeWallMatrix(existing);
       return;
     }
     if (existing) this.removeWall(w.id);
 
+    let entry;
     if (asDoor) {
       const pose = doorPose(w, this.grid, opts);
       const pivot = new THREE.Group();
       pivot.position.set(pose.hx, pose.bottom, pose.hz);
       pivot.rotation.y = pose.angle;
-      const mesh = new THREE.Mesh(this.boxGeometry, w.door === 2 ? this.materials.secretDoor : this.materials.door);
-      mesh.scale.set(pose.length, pose.top - pose.bottom, this.options.wallThickness * 0.7);
+      const mesh = new THREE.Mesh(this.boxGeometry, doorMat);
+      const height = pose.top - pose.bottom;
+      mesh.scale.set(pose.length, height * cut, this.options.wallThickness * 0.7);
       mesh.position.x = pose.length / 2;
       mesh.userData.wallId = w.id;
+      mesh.userData.isDoor = true;
       pivot.add(mesh);
       this.wallGroup.add(pivot);
-      this.walls.set(w.id, { data: w, object: pivot, door: { pivot, mesh, target: pose.angle } });
+      const box = wallBox(w, this.grid, opts);
+      entry = { data: w, object: pivot, mesh, height, cut, center: { x: box.cx, z: box.cz }, door: { pivot, target: pose.angle } };
+    } else {
+      const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
+      const batch = this._ensureWallBatch(this._wallCount() + 1);
+      const slot = batch.mesh.count++;
+      batch.ids[slot] = w.id;
+      entry = { data: w, instanced: true, slot, box, height: box.top - box.bottom, cut, center: { x: box.cx, z: box.cz } };
+      this.walls.set(w.id, entry);
+      this._writeWallMatrix(entry);
       return;
     }
-    const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
-    const mesh = new THREE.Mesh(this.boxGeometry, [
-      this.materials.wall, this.materials.wall, this.materials.wallTop,
-      this.materials.wall, this.materials.wall, this.materials.wall,
-    ]);
-    mesh.position.set(box.cx, box.bottom, box.cz);
-    mesh.rotation.y = box.angle;
-    // Slight overlap at the ends hides cracks at corners.
-    mesh.scale.set(box.length + box.thickness, box.top - box.bottom, box.thickness);
-    mesh.userData.wallId = w.id;
-    this.wallGroup.add(mesh);
-    this.walls.set(w.id, { data: w, object: mesh });
+    entry.object.visible = this._levelVisible(w.levelIndex);
+    this.walls.set(w.id, entry);
   }
 
   removeWall(id) {
     const w = this.walls.get(id);
     if (!w) return;
-    w.object.removeFromParent();
     this.walls.delete(id);
+    if (!w.instanced) {
+      w.object.removeFromParent();
+      return;
+    }
+    // Swap-remove: move the last instance into the freed slot.
+    const mesh = this.wallBatch.mesh;
+    const last = mesh.count - 1;
+    if (w.slot !== last) {
+      mesh.getMatrixAt(last, _m);
+      mesh.setMatrixAt(w.slot, _m);
+      const movedId = this.wallBatch.ids[last];
+      this.wallBatch.ids[w.slot] = movedId;
+      const moved = this.walls.get(movedId);
+      if (moved) moved.slot = w.slot;
+    }
+    this.wallBatch.ids.length = last;
+    mesh.count = last;
+    mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  _wallCount() {
+    return this.wallBatch?.mesh.count ?? 0;
+  }
+
+  /** Make sure the wall InstancedMesh can hold `min` walls (grows by doubling). */
+  _ensureWallBatch(min) {
+    const cur = this.wallBatch;
+    if (cur && cur.capacity >= min) return cur;
+    const capacity = Math.max(64, min, (cur?.capacity ?? 0) * 2);
+    const mesh = new THREE.InstancedMesh(this.wallGeometry, this.materials.wall, capacity);
+    mesh.instanceMatrix.setUsage(THREE.DynamicDrawUsage);
+    mesh.frustumCulled = false;
+    mesh.name = "walls";
+    mesh.count = 0;
+    const batch = { mesh, capacity, ids: [] };
+    if (cur) {
+      for (let i = 0; i < cur.mesh.count; i++) {
+        cur.mesh.getMatrixAt(i, _m);
+        mesh.setMatrixAt(i, _m);
+      }
+      mesh.count = cur.mesh.count;
+      batch.ids = cur.ids;
+      cur.mesh.removeFromParent();
+      cur.mesh.dispose();
+    }
+    this.wallGroup.add(mesh);
+    this.wallBatch = batch;
+    return batch;
+  }
+
+  /** Write one wall's instance matrix (level visibility and cutaway included). */
+  _writeWallMatrix(entry) {
+    const b = entry.box;
+    const show = this._levelVisible(entry.data.levelIndex);
+    _p.set(b.cx, b.bottom, b.cz);
+    _q.setFromAxisAngle(_up, b.angle);
+    // Slight overlap at the ends hides cracks at corners.
+    if (show) _s.set(b.length + b.thickness, entry.height * entry.cut, b.thickness);
+    else _s.set(0, 0, 0);
+    _m.compose(_p, _q, _s);
+    this.wallBatch.mesh.setMatrixAt(entry.slot, _m);
+    this.wallBatch.mesh.instanceMatrix.needsUpdate = true;
+  }
+
+  /** Is a wall currently drawn (level filter)? */
+  isWallShown(id) {
+    const w = this.walls.get(id);
+    if (!w) return false;
+    return w.instanced ? this._levelVisible(w.data.levelIndex) : w.object.visible;
+  }
+
+  /** Lower walls between the camera and its target (tactics cutaway). */
+  setCutaway(on) {
+    this.options.cutaway = !!on;
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -258,13 +564,15 @@ export class View3D {
     }
     const srcChanged = entry.data?.src !== t.src || !entry.textureApplied;
     entry.data = t;
+    entry.levelHidden = !this._levelVisible(t.levelIndex);
+    this._applyTokenVisible(entry);
     this._placeToken(entry, snap);
     if (srcChanged) await this._applyTokenTexture(entry);
   }
 
   _createStandee(t) {
     const group = new THREE.Group(); // at the token's foot position
-    const yaw = new THREE.Group(); // rotates to face the camera (cylindrical billboard)
+    const yaw = new THREE.Group(); // rotates with the camera (screen-aligned billboard)
     const pivot = new THREE.Group(); // tilts the card back when looking from above
     const card = new THREE.Mesh(
       new THREE.PlaneGeometry(1, 1),
@@ -280,9 +588,16 @@ export class View3D {
       new THREE.MeshLambertMaterial({ color, transparent: true }),
     );
     base.position.y = 0.03;
-    group.add(base, yaw);
+    base.userData.tokenId = t.id;
+    const ring = new THREE.Mesh(this.ringGeometry, this.materials.ring);
+    ring.position.y = 0.075;
+    ring.visible = false;
+    group.add(base, ring, yaw);
     this.tokenGroup.add(group);
-    return { data: t, group, yaw, pivot, card, base, target: new THREE.Vector3(), visible: true, textureApplied: false };
+    return {
+      data: t, group, yaw, pivot, card, base, ring, target: new THREE.Vector3(),
+      allowed: true, levelHidden: false, textureApplied: false,
+    };
   }
 
   async _applyTokenTexture(entry) {
@@ -312,6 +627,7 @@ export class View3D {
     entry.card.position.y = 0.06;
     const r = Math.max(t.width, t.height) * 0.45;
     entry.base.scale.set(r / 0.45, 1, r / 0.45);
+    entry.ring.scale.set(r / 0.45, 1, r / 0.45);
   }
 
   /** Compute the world target position of a token from its data and the terrain. */
@@ -319,7 +635,8 @@ export class View3D {
     const t = entry.data;
     const g = this.grid;
     const c = tokenCenter(g, t);
-    const terrain = maxHeightUnderRect(this.heights, g, t.x, t.y, t.width * g.size, t.height * g.size);
+    const li = t.levelIndex ?? 0;
+    const terrain = li > 0 ? 0 : maxHeightUnderRect(this.heights, g, t.x, t.y, t.width * g.size, t.height * g.size);
     const footUnits = Math.max(terrain, t.elevation ?? 0);
     const w = canvasToWorld(g, c.x, c.y);
     entry.target.set(w.x, unitsToWorldY(g, footUnits), w.z);
@@ -343,10 +660,21 @@ export class View3D {
   setTokenVisibility(id, visible, ghost = false) {
     const entry = this.tokens.get(id);
     if (!entry) return;
-    entry.group.visible = !!visible;
+    entry.allowed = !!visible;
     const opacity = ghost ? 0.45 : 1;
     entry.card.material.opacity = opacity;
     entry.base.material.opacity = opacity;
+    this._applyTokenVisible(entry);
+  }
+
+  _applyTokenVisible(entry) {
+    entry.group.visible = entry.allowed && !entry.levelHidden;
+  }
+
+  /** Yellow selection ring under a token. */
+  setTokenSelected(id, selected) {
+    const entry = this.tokens.get(id);
+    if (entry) entry.ring.visible = !!selected;
   }
 
   removeToken(id) {
@@ -361,17 +689,143 @@ export class View3D {
   }
 
   /* ---------------------------------------------------------------------------------------- */
+  /* Tiles                                                                                    */
+  /* ---------------------------------------------------------------------------------------- */
+
+  async upsertTile(t) {
+    const existing = this.tiles.get(t.id);
+    if (existing) this.removeTile(t.id);
+    if (!t.src || (t.hidden && !this.options.isGM) || t.width <= 0 || t.height <= 0) return;
+    const g = this.grid;
+    const overhead = isOverheadTile(t, this.model?.foregroundElevation);
+    const li = t.levelIndex ?? 0;
+    const levelY = li > 0 && this.model?.levels?.[li] ? levelFloorY(this.model.levels[li], g) : null;
+    const ground = levelY ?? unitsToWorldY(g, maxHeightUnderRect(this.heights, g, t.x, t.y, t.width, t.height));
+    const p = tilePlacement(t, g, { floorY: ground, roofY: ground + this.options.wallHeight, overhead });
+    const mat = this._fogged(new THREE.MeshLambertMaterial({
+      transparent: true, alphaTest: 0.02, side: THREE.DoubleSide, depthWrite: !overhead,
+      opacity: t.alpha * (t.hidden ? 0.5 : 1),
+    }), overhead ? "strict" : false);
+    const mesh = new THREE.Mesh(this.planeGeometry, mat);
+    mesh.scale.set(p.width * (p.mirrorX ? -1 : 1), 1, p.depth * (p.mirrorY ? -1 : 1));
+    const group = new THREE.Group();
+    group.position.set(p.cx, p.y, p.cz);
+    group.rotation.y = p.angle;
+    group.add(mesh);
+    mesh.renderOrder = overhead ? 2 : 1;
+    this.tileGroup.add(group);
+    const entry = { data: t, group, mesh, overhead, baseOpacity: mat.opacity, levelHidden: !this._levelVisible(li) };
+    this.tiles.set(t.id, entry);
+    try {
+      const tex = await this.loadTexture(t.src);
+      if (this.tiles.get(t.id) !== entry) return;
+      mat.map = tex;
+      mat.needsUpdate = true;
+    } catch (e) {
+      console.warn("foundry-3d-view | tile texture failed", t.src, e);
+    }
+  }
+
+  removeTile(id) {
+    const e = this.tiles.get(id);
+    if (!e) return;
+    e.group.removeFromParent();
+    e.mesh.material.dispose();
+    this.tiles.delete(id);
+  }
+
+  setShowRoofs(on) {
+    this.options.showRoofs = !!on;
+  }
+
+  /** Canvas points (e.g. the user's tokens); roofs covering any of them fade out. */
+  setRoofFocus(points) {
+    this.roofFocus = points ?? [];
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Lights & darkness                                                                        */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /**
+   * @param {object[]} lights  lightData()/tokenLightData() entries (canvas px, radii in units)
+   * @param {number} darkness  scene darkness level 0..1
+   */
+  setLights(lights, darkness = this.darkness) {
+    this.lights = lights ?? [];
+    this.darkness = Math.min(1, Math.max(0, Number(darkness) || 0));
+    const a = ambientForDarkness(this.darkness);
+    this.hemi.intensity = 1.6 * a;
+    this.sun.intensity = 1.6 * a;
+    this._updateLights();
+  }
+
+  _updateLights() {
+    if (!this.grid) return;
+    const g = this.grid;
+    const focus = worldToCanvas(g, this.controls.target.x, this.controls.target.z);
+    const resolved = this.lights.map((l) => {
+      if (!l.tokenId) return l;
+      const tok = this.tokens.get(l.tokenId);
+      if (!tok || !tok.group.visible) return { ...l, hidden: true };
+      const p = worldToCanvas(g, tok.group.position.x, tok.group.position.z);
+      return { ...l, x: p.x, y: p.y, _y: tok.group.position.y };
+    });
+    const chosen = selectLights(resolved, focus, this.lightPool.length);
+    // Lights matter most in the dark; in daylight they only add a gentle tint.
+    const strength = 0.6 + 2.4 * this.darkness;
+    this.lightPool.forEach((pl, i) => {
+      const l = chosen[i];
+      if (!l) {
+        pl.intensity = 0;
+        return;
+      }
+      const w = canvasToWorld(g, l.x, l.y);
+      const y = l._y ?? Math.max(this.terrainYAt(l.x, l.y), unitsToWorldY(g, l.elevation));
+      pl.position.set(w.x, y + 1.1, w.z);
+      pl.color.setHex(l.color);
+      pl.distance = Math.max(l.dim, l.bright) / g.distance + 0.5;
+      pl.decay = 1;
+      pl.intensity = strength * (0.6 + Math.min(1, l.alpha ?? 0.5));
+    });
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Fog of war                                                                               */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /**
+   * @param {Uint8Array|null} states  per-cell FOG states (cols*rows), or null to disable fog
+   */
+  setFog(states) {
+    const tex = this.fogUniforms.f3dFogMap.value;
+    if (!states || !tex) {
+      this.fogUniforms.f3dFogOn.value = 0;
+      return;
+    }
+    const data = tex.image.data;
+    const n = Math.min(states.length, data.length);
+    for (let i = 0; i < n; i++) data[i] = FOG_VALUE[states[i]] ?? 0;
+    tex.needsUpdate = true;
+    this.fogUniforms.f3dFogOn.value = 1;
+    this.fogStates = states;
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
   /* Textures                                                                                 */
   /* ---------------------------------------------------------------------------------------- */
 
   /** @param {string|HTMLCanvasElement|HTMLImageElement} src */
   loadTexture(src) {
     if (typeof src !== "string") {
+      if (this.textureCache.has(src)) return this.textureCache.get(src);
       const tex = src instanceof HTMLCanvasElement ? new THREE.CanvasTexture(src) : new THREE.Texture(src);
       tex.colorSpace = THREE.SRGBColorSpace;
       tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
       tex.needsUpdate = true;
-      return Promise.resolve(tex);
+      const p = Promise.resolve(tex);
+      this.textureCache.set(src, p);
+      return p;
     }
     if (this.textureCache.has(src)) return this.textureCache.get(src);
     const p = /\.(webm|mp4|m4v|ogv)(\?|$)/i.test(src) ? this._loadVideoTexture(src) : new THREE.TextureLoader().loadAsync(src);
@@ -471,22 +925,88 @@ export class View3D {
   /* Picking                                                                                  */
   /* ---------------------------------------------------------------------------------------- */
 
-  /** Grid cell under a client (screen) point, or null. */
-  pickCell(clientX, clientY) {
-    if (!this.terrainMesh) return null;
+  _ray(clientX, clientY) {
     const rect = this.renderer.domElement.getBoundingClientRect();
     const ndc = new THREE.Vector2(((clientX - rect.left) / rect.width) * 2 - 1, -((clientY - rect.top) / rect.height) * 2 + 1);
     this.camera.updateMatrixWorld();
+    this.world.updateMatrixWorld();
     this.raycaster.setFromCamera(ndc, this.camera);
-    const hit = this.raycaster.intersectObject(this.terrainMesh, false)[0];
-    if (!hit) return null;
+  }
+
+  _cellFromHit(hit) {
     // Nudge against the face normal so clicks on a side face pick the raised cell.
     const p = hit.point.clone();
     if (hit.face) p.addScaledVector(hit.face.normal, -0.01);
     return worldToCell(this.grid, p.x, p.z);
   }
 
-  /** Outline a cell (paint mode hover); pass null to hide. */
+  /** Grid cell under a client (screen) point, or null. */
+  pickCell(clientX, clientY) {
+    if (!this.terrainMesh) return null;
+    this._ray(clientX, clientY);
+    const targets = [this.terrainMesh, ...this.levelFloors.filter((f) => f.mesh.visible).map((f) => f.mesh)];
+    // Upper floors are mostly transparent images: only their opaque parts catch the pointer.
+    const hit = this.raycaster.intersectObjects(targets, false).find((h) => h.object.name !== "levelFloor" || this._opaqueAt(h));
+    return hit ? this._cellFromHit(hit) : null;
+  }
+
+  /**
+   * What is under the pointer: a visible token, a door, or a terrain cell (in that priority for
+   * the nearest hit). Plain walls block picking of what is behind them.
+   * @returns {{type:"token",id:string}|{type:"door",id:string}|{type:"cell",col:number,row:number}|null}
+   */
+  pick(clientX, clientY) {
+    if (!this.terrainMesh) return null;
+    this._ray(clientX, clientY);
+    const targets = [this.terrainMesh, ...this.levelFloors.filter((f) => f.mesh.visible).map((f) => f.mesh)];
+    for (const [, t] of this.tokens) if (t.group.visible) targets.push(t.card, t.base);
+    if (this.wallBatch?.mesh.count) targets.push(this.wallBatch.mesh);
+    for (const [, w] of this.walls) if (w.door && w.object.visible) targets.push(w.mesh);
+    const hits = this.raycaster.intersectObjects(targets, false);
+    for (const hit of hits) {
+      const ud = hit.object.userData;
+      if (ud.tokenId) {
+        // Ignore clicks on transparent parts of the card.
+        if (hit.object === this.tokens.get(ud.tokenId)?.card && !this._opaqueAt(hit)) continue;
+        return { type: "token", id: ud.tokenId };
+      }
+      if (ud.wallId) return ud.isDoor ? { type: "door", id: ud.wallId } : null;
+      if (hit.object === this.wallBatch?.mesh) return null; // a plain wall blocks the click
+      if (hit.object.name === "levelFloor" && !this._opaqueAt(hit)) continue;
+      const cell = this._cellFromHit(hit);
+      return cell ? { type: "cell", ...cell } : null;
+    }
+    return null;
+  }
+
+  /** Alpha test for a hit on a textured plane (falls back to "opaque" if the image is unreadable). */
+  _opaqueAt(hit) {
+    const img = hit.object.material.map?.image;
+    if (!img || !hit.uv) return true;
+    try {
+      this._alphaCache ??= new WeakMap();
+      let ctx = this._alphaCache.get(img);
+      const w = img.videoWidth || img.width, h = img.videoHeight || img.height;
+      if (!ctx) {
+        // Downscale big images: alpha picking does not need full resolution.
+        const k = Math.min(1, 512 / Math.max(w, h));
+        const cv = document.createElement("canvas");
+        cv.width = Math.max(1, Math.round(w * k));
+        cv.height = Math.max(1, Math.round(h * k));
+        ctx = cv.getContext("2d", { willReadFrequently: true });
+        ctx.drawImage(img, 0, 0, cv.width, cv.height);
+        this._alphaCache.set(img, ctx);
+      }
+      const cw = ctx.canvas.width, ch = ctx.canvas.height;
+      const x = Math.min(cw - 1, Math.max(0, Math.floor(hit.uv.x * cw)));
+      const y = Math.min(ch - 1, Math.max(0, Math.floor((1 - hit.uv.y) * ch)));
+      return ctx.getImageData(x, y, 1, 1).data[3] > 20;
+    } catch {
+      return true; // tainted canvas (cross-origin image): accept the hit
+    }
+  }
+
+  /** Outline a cell (hover); pass null to hide. */
   highlightCell(cell) {
     if (!cell) {
       if (this.hoverLine) this.hoverLine.visible = false;
@@ -496,18 +1016,51 @@ export class View3D {
     const r = cellRect(g, cell.col, cell.row);
     const a = canvasToWorld(g, r.x, r.y);
     const b = canvasToWorld(g, r.x + r.width, r.y + r.height);
-    const h = unitsToWorldY(g, this.heights.data[cell.row * g.cols + cell.col] || 0) + 0.02;
+    const h = unitsToWorldY(g, getHeight(this.heights, cell.col, cell.row)) + 0.02;
     const pts = [a.x, h, a.z, b.x, h, a.z, b.x, h, b.z, a.x, h, b.z];
     if (!this.hoverLine) {
       const geo = new THREE.BufferGeometry();
       geo.setAttribute("position", new THREE.BufferAttribute(new Float32Array(12), 3));
       this.hoverLine = new THREE.LineLoop(geo, this.materials.hover);
-      this.world.add(this.hoverLine);
+      this.overlayGroup.add(this.hoverLine);
     }
     this.hoverLine.geometry.attributes.position.array.set(pts);
     this.hoverLine.geometry.attributes.position.needsUpdate = true;
     this.hoverLine.geometry.computeBoundingSphere();
     this.hoverLine.visible = true;
+  }
+
+  /**
+   * Draw a ruler through cell centres (on top of the terrain) with a label at the end.
+   * @param {{col:number,row:number}[]|null} cells  null hides it
+   * @param {string} [label]
+   */
+  showRuler(cells, label = "") {
+    if (!cells || cells.length < 2) {
+      if (this.rulerLine) this.rulerLine.visible = false;
+      this.rulerLabel.style.display = "none";
+      this._rulerEnd = null;
+      return;
+    }
+    const g = this.grid;
+    const pts = [];
+    for (const c of cells) {
+      const p = cellCenter(g, c.col, c.row);
+      const w = canvasToWorld(g, p.x, p.y);
+      pts.push(new THREE.Vector3(w.x, unitsToWorldY(g, getHeight(this.heights, c.col, c.row)) + 0.12, w.z));
+    }
+    if (this.rulerLine) {
+      this.rulerLine.geometry.dispose();
+      this.rulerLine.geometry = new THREE.BufferGeometry().setFromPoints(pts);
+    } else {
+      this.rulerLine = new THREE.Line(new THREE.BufferGeometry().setFromPoints(pts), this.materials.ruler);
+      this.rulerLine.renderOrder = 10;
+      this.overlayGroup.add(this.rulerLine);
+    }
+    this.rulerLine.visible = true;
+    this._rulerEnd = pts[pts.length - 1].clone().add(new THREE.Vector3(0, 0.35, 0));
+    this.rulerLabel.textContent = label;
+    this.rulerLabel.style.display = label ? "block" : "none";
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -527,11 +1080,14 @@ export class View3D {
     this._last = now;
     this.controls.update();
     const k = 1 - Math.exp(-dt * 14);
+    const target = this.controls.target;
+    const cam = this.camera.position;
 
     // Camera polar angle drives how far standees lean back (flat when seen from straight above).
-    const offset = this.camera.position.clone().sub(this.controls.target);
+    const offset = cam.clone().sub(target);
     const polar = Math.acos(THREE.MathUtils.clamp(offset.y / (offset.length() || 1), -1, 1));
     const lean = THREE.MathUtils.clamp((0.75 - polar) / 0.5, 0, 1) * (Math.PI / 2);
+    const f = lean / (Math.PI / 2);
 
     // All standees share the camera's yaw (screen-aligned, like sprites in tactics games), so in
     // top-down view they all lie flat with their top toward the top of the screen.
@@ -541,13 +1097,45 @@ export class View3D {
       t.yaw.rotation.y = yaw;
       t.pivot.rotation.x = -lean;
       // When lying down, slide the card so its centre (not its foot) sits on the token.
-      const f = lean / (Math.PI / 2);
-      t.pivot.position.set(0, f * 0.08, f * Math.abs(t.card.scale.y) / 2);
+      t.pivot.position.set(0, f * 0.08, (f * Math.abs(t.card.scale.y)) / 2);
     }
+
+    // Doors swing; walls toward the camera sink when cutaway is on.
+    const cutaway = this.options.cutaway && !this.topDown;
     for (const [, w] of this.walls) {
-      if (!w.door) continue;
-      const p = w.door.pivot;
-      p.rotation.y += (w.door.target - p.rotation.y) * k;
+      if (w.door) w.door.pivot.rotation.y += (w.door.target - w.door.pivot.rotation.y) * k;
+      const low = Math.min(1, this.options.cutawayHeight / (w.height || 1));
+      const goal = cutaway && isWallTowardCamera(w.center.x, w.center.z, target, cam) ? low : 1;
+      if (Math.abs(goal - w.cut) > 1e-3) {
+        w.cut += (goal - w.cut) * k;
+        if (w.instanced) this._writeWallMatrix(w);
+        else w.mesh.scale.y = w.height * w.cut;
+      }
+    }
+
+    // Roofs fade out when disabled, in cutaway, or when one of the focus tokens is under them.
+    for (const [, t] of this.tiles) {
+      let goal = t.baseOpacity;
+      if (t.levelHidden) goal = 0;
+      else if (t.overhead) {
+        const under = this.roofFocus.some((p) => tileContainsPoint(t.data, p.x, p.y));
+        if (!this.options.showRoofs || cutaway || under) goal = 0;
+      }
+      const m = t.mesh.material;
+      m.opacity += (goal - m.opacity) * k;
+      t.group.visible = m.opacity > 0.02;
+    }
+
+    this._lightTimer += dt;
+    if (this._lightTimer > 0.25) {
+      this._lightTimer = 0;
+      this._updateLights();
+    }
+
+    if (this._rulerEnd && this.rulerLabel.style.display !== "none") {
+      const p = this._rulerEnd.clone().project(this.camera);
+      const w = this.container.clientWidth, h = this.container.clientHeight;
+      this.rulerLabel.style.transform = `translate(${((p.x + 1) / 2) * w}px, ${((1 - p.y) / 2) * h}px) translate(-50%, -100%)`;
     }
     this.renderer.render(this.scene, this.camera);
   }
@@ -559,10 +1147,16 @@ export class View3D {
     this.clear();
     this.controls.dispose();
     this.boxGeometry.dispose();
+    this.wallGeometry.dispose();
+    this.wallBatch?.mesh.dispose();
+    this.planeGeometry.dispose();
+    this.ringGeometry.dispose();
     Object.values(this.materials).forEach((m) => m.dispose());
     for (const p of this.textureCache.values()) p.then((t) => t.dispose()).catch(() => {});
     this.textureCache.clear();
     this.bgTexture?.dispose();
+    this.fogUniforms.f3dFogMap.value?.dispose();
+    this.rulerLabel.remove();
     this.renderer.dispose();
     this.renderer.domElement.remove();
   }

@@ -29,6 +29,11 @@ const shots = [
   ["dev-page-topdown.png", "?topdown=1"],
   ["dev-page-player.png", "?player=1&az=-70"],
   ["dev-page-paint.png", "?paint=1&az=150"],
+  ["dev-page-fog.png", "?player=1&topdown=1"],
+  ["dev-page-cutaway.png", "?cutaway=1&az=-20"],
+  ["dev-page-ruler.png", "?select=hero&hover=11,5&az=10"],
+  ["foundry-mock-gm.png", "foundry-mock.html?open=1"],
+  ["foundry-mock-player.png", "foundry-mock.html?open=1&gm=0"],
 ];
 try {
   for (const [name, query] of shots) {
@@ -38,7 +43,7 @@ try {
       "--enable-unsafe-swiftshader",
       "--hide-scrollbars",
       "--window-size=1400,850",
-      "--virtual-time-budget=10000",
+      "--virtual-time-budget=6000",
       `--screenshot=${join(outDir, name)}`,
       `http://127.0.0.1:${port}/dev/${query}`,
     ], { timeout: 60000 });

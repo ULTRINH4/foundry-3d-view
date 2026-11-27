@@ -101,11 +101,19 @@ export function triangleNormal(a, b, c) {
 
 function mergeBuffers(tops, sides) {
   const offset = tops.vertexCount;
+  const cat = (Type, a, b) => {
+    const out = new Type(a.length + b.length);
+    out.set(a, 0);
+    out.set(b, a.length);
+    return out;
+  };
+  const sideIdx = new Uint32Array(sides.indices.length);
+  for (let i = 0; i < sideIdx.length; i++) sideIdx[i] = sides.indices[i] + offset;
   return {
-    positions: new Float32Array([...tops.positions, ...sides.positions]),
-    normals: new Float32Array([...tops.normals, ...sides.normals]),
-    uvs: new Float32Array([...tops.uvs, ...sides.uvs]),
-    indices: new Uint32Array([...tops.indices, ...sides.indices.map((i) => i + offset)]),
+    positions: cat(Float32Array, tops.positions, sides.positions),
+    normals: cat(Float32Array, tops.normals, sides.normals),
+    uvs: cat(Float32Array, tops.uvs, sides.uvs),
+    indices: cat(Uint32Array, tops.indices, sideIdx),
     groups: [
       { start: 0, count: tops.indices.length, materialIndex: 0 },
       { start: tops.indices.length, count: sides.indices.length, materialIndex: 1 },

@@ -2,12 +2,18 @@
  * Foundry glue: builds the overlay, feeds the View3D from the current scene and keeps it in sync
  * through document hooks. Everything Foundry-specific lives here and in main.mjs.
  */
-import { MODULE_ID, GRID_TYPE } from "../core/constants.mjs";
+import { MODULE_ID, GRID_TYPE, DOOR_STATE, WALL_DOOR } from "../core/constants.mjs";
 import { buildSceneModel, tokenData } from "../core/scene-model.mjs";
 import { wallData } from "../core/walls.mjs";
-import { heightMapsEqual, normalizeHeightMap } from "../core/heights.mjs";
+import { heightMapsEqual, normalizeHeightMap, getHeight } from "../core/heights.mjs";
+import { visibleCells, fogStates, losVisibilityTest } from "../core/vision.mjs";
+import {
+  tileData, lightData, tokenLightData, levelIndexFor, gridSquares, formatDistance, DIAGONALS,
+} from "../core/scene-extras.mjs";
+import { cellCenter, tokenCenter } from "../core/coords.mjs";
 import { View3D } from "../render/view3d.mjs";
 import { createHud } from "../ui/hud.mjs";
+import { createInteraction } from "../ui/interact.mjs";
 
 const t = (key) => game.i18n.localize(key);
 
@@ -15,12 +21,16 @@ export class Tactics3DController {
   constructor() {
     this.view = null;
     this.hud = null;
+    this.interaction = null;
     this.overlay = null;
+    this.model = null;
     this._hooks = [];
     this._visTimer = null;
     this._saveTimer = null;
     this._pendingHeights = null;
     this._opening = null;
+    this._explored = new Map(); // sceneId -> Uint8Array (fog memory for this session)
+    this._fogQueued = false;
   }
 
   get isOpen() {
@@ -38,8 +48,7 @@ export class Tactics3DController {
       ui.notifications.warn(t("F3D.Notify.NoScene"));
       return;
     }
-    const gridType = scene.grid?.type ?? canvas.grid?.type;
-    if (gridType !== GRID_TYPE.SQUARE && gridType !== GRID_TYPE.GRIDLESS) {
+    if (!isSupportedGrid(scene)) {
       ui.notifications.warn(t("F3D.Notify.SquareOnly"));
       return;
     }
@@ -64,25 +73,60 @@ export class Tactics3DController {
       isGM: game.user.isGM,
       wallHeight: Number(game.settings.get(MODULE_ID, "wallHeight")) || 1.5,
       showGrid: game.settings.get(MODULE_ID, "showGrid"),
+      cutaway: game.settings.get(MODULE_ID, "cutaway"),
+      showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
     });
     await this._loadScene();
+    if (this.overlay !== overlay) return; // closed while loading
+    this._buildHud();
+    this._buildInteraction();
+    this._registerHooks();
+    this._visTimer = setInterval(() => {
+      this.syncVisibility();
+      this._updateRoofFocus();
+      this._queueFog();
+    }, 400);
+  }
 
+  _buildHud() {
+    this.hud?.destroy();
     const distance = canvas.dimensions.distance ?? canvas.scene.grid.distance;
-    this.hud = createHud(overlay, {
+    this.hud = createHud(this.overlay, {
       view: this.view,
       t,
       isGM: game.user.isGM,
       step: Math.round((Number(game.settings.get(MODULE_ID, "heightStep")) || 0.5) * distance * 1000) / 1000,
       unitLabel: canvas.scene.grid?.units ?? "",
-      getWalls: () => Array.from(canvas.scene.walls).map(wallData),
+      levels: this.model.levels,
+      initial: { cutaway: game.settings.get(MODULE_ID, "cutaway"), showRoofs: game.settings.get(MODULE_ID, "showRoofs") },
+      onViewSettings: ({ cutaway, showRoofs }) => {
+        game.settings.set(MODULE_ID, "cutaway", cutaway);
+        game.settings.set(MODULE_ID, "showRoofs", showRoofs);
+      },
+      getWalls: () => Array.from(canvas.scene.walls).map(wallData).filter((w) => !w.levelIndex),
       getFocus: () => this._focusPoint(),
       onHeightsChanged: (h) => this._queueSaveHeights(h),
       onClose: () => this.close(),
       confirm: (msg) => confirmDialog(msg),
     });
     this._addWindowToggle();
-    this._registerHooks();
-    this._visTimer = setInterval(() => this.syncVisibility(), 300);
+  }
+
+  _buildInteraction() {
+    this.interaction?.destroy();
+    this.interaction = createInteraction(this.view, {
+      isBusy: () => !!this.hud?.state.painting,
+      getControlled: () => (canvas.tokens?.controlled ?? []).map((p) => p.document.id),
+      canControl: (id) => {
+        const p = canvas.tokens?.get(id);
+        return !!p && (game.user.isGM || p.isOwner);
+      },
+      onSelectToken: (id, additive) => canvas.tokens?.get(id)?.control({ releaseOthers: !additive }),
+      onReleaseAll: () => canvas.tokens?.releaseAll(),
+      onMoveToken: (id, cell) => this._moveToken(id, cell),
+      onToggleDoor: (id) => this._toggleDoor(id),
+      measure: (from, to) => this._measure(from, to),
+    });
   }
 
   _addWindowToggle() {
@@ -106,8 +150,17 @@ export class Tactics3DController {
     const model = buildSceneModel(canvas.scene, canvas.dimensions);
     model.background.src = resolveSrc(model.background.src);
     for (const tok of model.tokens) tok.src = resolveSrc(tok.src);
-    await this.view.load(model);
+    for (const tile of model.tiles) tile.src = resolveSrc(tile.src);
+    for (const lv of model.levels) lv.background.src = resolveSrc(lv.background.src);
+    model.darkness = currentDarkness();
+    this.model = model;
+    const view = this.view;
+    await view.load(model);
+    if (this.view !== view) return; // closed (or reopened) while loading
     this.syncVisibility(true);
+    this._updateFog();
+    this._syncSelection();
+    this._updateRoofFocus();
     const focus = this._focusPoint();
     if (focus) this.view.resetCamera(focus);
   }
@@ -116,7 +169,7 @@ export class Tactics3DController {
   _focusPoint() {
     const tok = canvas.tokens?.controlled?.[0] ?? canvas.tokens?.placeables?.find((p) => p.isOwner && p.isVisible);
     if (!tok) return null;
-    return { x: tok.document.x + (tok.document.width * canvas.grid.size) / 2, y: tok.document.y + (tok.document.height * canvas.grid.size) / 2 };
+    return tokenCenter(canvas.grid, tok.document);
   }
 
   close() {
@@ -125,11 +178,71 @@ export class Tactics3DController {
     this._hooks = [];
     clearInterval(this._visTimer);
     this._flushHeights();
+    this.interaction?.destroy();
     this.hud?.destroy();
     this.view?.dispose();
     this.overlay?.remove();
-    this.view = this.hud = this.overlay = null;
+    this.view = this.hud = this.overlay = this.interaction = this.model = null;
     ui.controls?.render?.();
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Actions from the 3D view                                                                 */
+  /* ---------------------------------------------------------------------------------------- */
+
+  async _moveToken(id, cell) {
+    const p = canvas.tokens?.get(id);
+    if (!p) return;
+    const doc = p.document;
+    if (!game.user.isGM && game.paused) return ui.notifications.warn(t("F3D.Notify.Paused"));
+    const g = canvas.dimensions;
+    const x = g.sceneX + cell.col * g.size;
+    const y = g.sceneY + cell.row * g.size;
+    if (x === doc.x && y === doc.y) return;
+    // Respect walls for players, like dragging in 2D does.
+    const dest = { x: x + (doc.width * g.size) / 2, y: y + (doc.height * g.size) / 2 };
+    if (!game.user.isGM && typeof p.checkCollision === "function") {
+      try {
+        if (p.checkCollision(dest, { type: "move", mode: "any" })) return ui.notifications.warn(t("F3D.Notify.Blocked"));
+      } catch (e) {
+        console.warn("foundry-3d-view | collision check failed", e);
+      }
+    }
+    await doc.update({ x, y });
+  }
+
+  async _toggleDoor(id) {
+    const wall = canvas.scene.walls.get(id);
+    if (!wall || wall.door === WALL_DOOR.NONE) return;
+    if (!game.user.isGM) {
+      if (game.paused) return ui.notifications.warn(t("F3D.Notify.Paused"));
+      if (wall.ds === DOOR_STATE.LOCKED) return ui.notifications.info(t("F3D.Notify.DoorLocked"));
+      if (wall.door === WALL_DOOR.SECRET && wall.ds !== DOOR_STATE.OPEN) return;
+    }
+    const ds = wall.ds === DOOR_STATE.OPEN ? DOOR_STATE.CLOSED : DOOR_STATE.OPEN;
+    await wall.update({ ds });
+  }
+
+  _measure(from, to) {
+    const g = canvas.dimensions;
+    const a = cellCenter(this.view.grid, from.col, from.row);
+    const b = cellCenter(this.view.grid, to.col, to.row);
+    let squares = null;
+    let distance = null;
+    try {
+      const r = canvas.grid.measurePath?.([a, b]);
+      if (r && Number.isFinite(r.distance)) distance = r.distance;
+    } catch {
+      /* fall back below */
+    }
+    if (distance === null) {
+      const rule = canvas.scene.grid?.diagonals ?? game.settings.get("core", "gridDiagonals") ?? DIAGONALS.EQUIDISTANT;
+      squares = gridSquares(from, to, rule);
+      distance = squares * g.distance;
+    }
+    const h = this.view.getHeights();
+    const dh = getHeight(h, to.col, to.row) - getHeight(h, from.col, from.row);
+    return formatDistance(distance / g.distance, g.distance, canvas.scene.grid?.units ?? "", dh);
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -140,37 +253,72 @@ export class Tactics3DController {
     this._hooks.push([name, Hooks.on(name, fn)]);
   }
 
+  _withLevel(doc, data) {
+    return { ...data, levelIndex: levelIndexFor(doc, this.model?.levels ?? []) };
+  }
+
   _registerHooks() {
     const inScene = (doc) => doc?.parent?.id === canvas.scene?.id;
+    const wall = (doc) => {
+      const w = wallData(doc);
+      return this._withLevel({ level: doc.level, levels: doc.levels, elevation: w.bottom ?? 0 }, w);
+    };
 
-    this._on("createWall", (doc) => inScene(doc) && this.view.upsertWall(wallData(doc)));
-    this._on("updateWall", (doc) => inScene(doc) && this.view.upsertWall(wallData(doc)));
-    this._on("deleteWall", (doc) => inScene(doc) && this.view.removeWall(doc.id));
+    this._on("createWall", (doc) => inScene(doc) && (this.view.upsertWall(wall(doc)), this._queueFog()));
+    this._on("updateWall", (doc) => inScene(doc) && (this.view.upsertWall(wall(doc)), this._queueFog()));
+    this._on("deleteWall", (doc) => inScene(doc) && (this.view.removeWall(doc.id), this._queueFog()));
 
+    const token = (doc) => {
+      const data = this._withLevel(doc, tokenData(doc));
+      data.src = resolveSrc(data.src);
+      return data;
+    };
     this._on("createToken", async (doc) => {
       if (!inScene(doc)) return;
-      const data = tokenData(doc);
-      data.src = resolveSrc(data.src);
-      await this.view.upsertToken(data);
+      await this.view.upsertToken(token(doc));
+      this._refreshLights();
       this.syncVisibility();
     });
     this._on("updateToken", (doc, changes) => {
       if (!inScene(doc)) return;
-      const data = tokenData(doc);
-      data.src = resolveSrc(data.src);
       // Position is animated through refreshToken; here we only need the final state.
-      this.view.upsertToken(data);
+      this.view.upsertToken(token(doc));
+      if ("light" in changes) this._refreshLights();
       if ("hidden" in changes) this.syncVisibility();
     });
-    this._on("deleteToken", (doc) => inScene(doc) && this.view.removeToken(doc.id));
+    this._on("deleteToken", (doc) => {
+      if (!inScene(doc)) return;
+      this.view.removeToken(doc.id);
+      this._refreshLights();
+    });
 
     // Follow Foundry's own token movement animation frame by frame.
-    this._on("refreshToken", (token) => {
-      if (!token?.document || token.document.parent?.id !== canvas.scene?.id) return;
-      const x = Number.isFinite(token.x) ? token.x : token.document.x;
-      const y = Number.isFinite(token.y) ? token.y : token.document.y;
-      this.view.moveToken(token.document.id, { x, y, elevation: token.document.elevation });
+    this._on("refreshToken", (tok) => {
+      if (!tok?.document || tok.document.parent?.id !== canvas.scene?.id) return;
+      const x = Number.isFinite(tok.x) ? tok.x : tok.document.x;
+      const y = Number.isFinite(tok.y) ? tok.y : tok.document.y;
+      this.view.moveToken(tok.document.id, { x, y, elevation: tok.document.elevation });
     });
+    this._on("controlToken", () => {
+      this._syncSelection();
+      this._updateRoofFocus();
+      this.interaction?.refresh();
+      this.syncVisibility();
+    });
+
+    const tile = (doc) => {
+      const data = this._withLevel(doc, tileData(doc));
+      data.src = resolveSrc(data.src);
+      return data;
+    };
+    this._on("createTile", (doc) => inScene(doc) && this.view.upsertTile(tile(doc)));
+    this._on("updateTile", (doc) => inScene(doc) && this.view.upsertTile(tile(doc)));
+    this._on("deleteTile", (doc) => inScene(doc) && this.view.removeTile(doc.id));
+
+    for (const hook of ["createAmbientLight", "updateAmbientLight", "deleteAmbientLight"]) {
+      this._on(hook, (doc) => inScene(doc) && this._refreshLights());
+    }
+    this._on("lightingRefresh", () => this._refreshDarkness());
 
     this._on("updateScene", (doc, changes) => {
       if (doc.id !== canvas.scene?.id) return;
@@ -179,24 +327,58 @@ export class Tactics3DController {
         const next = normalizeHeightMap(doc.getFlag(MODULE_ID, "heights"), this.view.grid.cols, this.view.grid.rows);
         if (!this._pendingHeights || heightMapsEqual(next, this._pendingHeights)) this.view.setHeights(next);
       }
+      if (foundry.utils.hasProperty(changes, "environment") || "darkness" in changes) this._refreshDarkness();
+      if ("tokenVision" in changes) this._queueFog();
     });
 
     // Scene switched or redrawn (grid/background/dimension changes trigger a redraw).
-    this._on("canvasReady", () => {
+    this._on("canvasReady", async () => {
       if (!this.isOpen) return;
-      const type = canvas.scene?.grid?.type;
-      if (!canvas.scene || (type !== GRID_TYPE.SQUARE && type !== GRID_TYPE.GRIDLESS)) return this.close();
-      this._loadScene();
+      if (!canvas.scene || !isSupportedGrid(canvas.scene)) return this.close();
+      await this._loadScene();
+      if (!this.isOpen) return;
+      this._buildHud();
+      this._buildInteraction();
     });
 
-    this._on("sightRefresh", () => this.syncVisibility());
-    this._on("controlToken", () => this.syncVisibility());
+    this._on("sightRefresh", () => {
+      this.syncVisibility();
+      this._queueFog();
+    });
+  }
+
+  _syncSelection() {
+    if (!this.view) return;
+    for (const [id] of this.view.tokens) this.view.setTokenSelected(id, !!canvas.tokens?.get(id)?.controlled);
+  }
+
+  /** Roofs fade over the tokens this user is looking through. */
+  _updateRoofFocus() {
+    if (!this.view || !canvas.tokens) return;
+    const toks = canvas.tokens.controlled.length
+      ? canvas.tokens.controlled
+      : canvas.tokens.placeables.filter((p) => !game.user.isGM && p.isOwner);
+    this.view.setRoofFocus(toks.map((p) => ({ x: p.center.x, y: p.center.y })));
+  }
+
+  _refreshLights() {
+    if (!this.view) return;
+    const lights = [
+      ...Array.from(canvas.scene.lights ?? []).map(lightData),
+      ...Array.from(canvas.scene.tokens ?? []).map(tokenLightData).filter(Boolean),
+    ];
+    this.view.setLights(lights, currentDarkness());
+  }
+
+  _refreshDarkness() {
+    if (!this.view) return;
+    const d = currentDarkness();
+    if (Math.abs(d - this.view.darkness) > 0.01) this.view.setLights(this.view.lights, d);
   }
 
   /**
    * Players only see tokens their vision allows (Foundry's own Token#isVisible). The GM sees
    * everything; hidden tokens are drawn as ghosts.
-   * TODO(lighting/fog milestone): walls/terrain are not fog-limited yet.
    */
   syncVisibility() {
     if (!this.view || !canvas.tokens) return;
@@ -210,6 +392,49 @@ export class Tactics3DController {
       const visible = placeable ? (placeable.isVisible ?? placeable.visible) : !doc.hidden;
       this.view.setTokenVisibility(doc.id, !!visible && !doc.hidden, false);
     }
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Fog of war in 3D                                                                         */
+  /* ---------------------------------------------------------------------------------------- */
+
+  _queueFog() {
+    if (this._fogQueued) return;
+    this._fogQueued = true;
+    setTimeout(() => {
+      this._fogQueued = false;
+      this._updateFog();
+    }, 120);
+  }
+
+  _fogEnabled() {
+    return !game.user.isGM && !!canvas.scene?.tokenVision && game.settings.get(MODULE_ID, "fog3d");
+  }
+
+  /**
+   * Per-square fog: a square is "visible" if Foundry's visibility test passes for any of a few
+   * points inside it (this honours lights, darkvision, walls and every vision mode). Squares seen
+   * before stay "explored" for the rest of the session.
+   */
+  _updateFog() {
+    if (!this.view?.grid) return;
+    if (!this._fogEnabled()) return this.view.setFog(null);
+    const g = this.view.grid;
+    let test;
+    const vis = canvas.visibility;
+    if (vis?.testVisibility) {
+      test = (x, y) => vis.testVisibility({ x, y }, { tolerance: 1 });
+    } else {
+      // Fallback: our own line of sight from owned tokens with vision.
+      const sources = canvas.tokens.placeables
+        .filter((p) => p.isOwner && p.document.sight?.enabled !== false)
+        .map((p) => ({ x: p.center.x, y: p.center.y, radius: sightRadiusPx(p.document) }));
+      test = losVisibilityTest(sources, Array.from(canvas.scene.walls).map(wallData), g);
+    }
+    const id = canvas.scene.id;
+    const fog = fogStates(this._explored.get(id) ?? null, visibleCells(g, test));
+    this._explored.set(id, fog.explored);
+    this.view.setFog(fog.states);
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -229,6 +454,24 @@ export class Tactics3DController {
     if (!heights || !game.user.isGM || !canvas.scene) return;
     canvas.scene.update({ [`flags.${MODULE_ID}.heights`]: { cols: heights.cols, rows: heights.rows, data: heights.data } });
   }
+}
+
+function isSupportedGrid(scene) {
+  const type = scene.grid?.type ?? canvas.grid?.type;
+  return type === GRID_TYPE.SQUARE || type === GRID_TYPE.GRIDLESS;
+}
+
+/** Live darkness (animated transitions included) with fallbacks for older APIs. */
+function currentDarkness() {
+  const d = canvas.environment?.darknessLevel ?? canvas.darknessLevel ?? canvas.scene?.environment?.darknessLevel ?? canvas.scene?.darkness ?? 0;
+  return Number(d) || 0;
+}
+
+/** Token sight range in px (Infinity when unlimited). */
+function sightRadiusPx(doc) {
+  const range = Number(doc.sight?.range);
+  if (!Number.isFinite(range) || range <= 0) return Infinity;
+  return (range / canvas.dimensions.distance) * canvas.dimensions.size;
 }
 
 /** Foundry stores paths relative to the data folder; make them loadable by three.js. */

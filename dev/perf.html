@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Foundry 3D View – performance check</title>
+  <link rel="stylesheet" href="../styles/foundry-3d-view.css">
+  <style>
+    html, body { margin: 0; height: 100%; background: #111; color: #eee; font-family: system-ui, sans-serif; }
+    #status { position: fixed; left: 8px; bottom: 8px; z-index: 5; font-size: 12px; background: #000a; padding: 6px; max-width: 90vw; }
+  </style>
+</head>
+<body>
+  <div id="f3d-overlay"><div class="f3d-viewport"></div></div>
+  <div id="status">building a 120x120 scene...</div>
+  <script type="module" src="./perf.mjs"></script>
+</body>
+</html>

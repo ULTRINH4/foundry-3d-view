@@ -22,5 +22,16 @@
   "F3D.Settings.HeightStep.Name": "Passo da pintura de altura (quadrados)",
   "F3D.Settings.HeightStep.Hint": "Quanto cada clique eleva ou rebaixa um quadrado, em quadrados da grade (0,5 numa grade de 1,5 m = 0,75 m).",
   "F3D.Settings.ShowGrid.Name": "Mostrar grade no 3D",
-  "F3D.Settings.ShowGrid.Hint": "Desenha as linhas da grade sobre o terreno 3D."
+  "F3D.Settings.ShowGrid.Hint": "Desenha as linhas da grade sobre o terreno 3D.",
+  "F3D.HUD.Cutaway": "Cortar paredes",
+  "F3D.HUD.Roofs": "Telhados",
+  "F3D.HUD.Levels": "Níveis visíveis",
+  "F3D.HUD.AllLevels": "Todos os níveis",
+  "F3D.HUD.Brush": "Pincel",
+  "F3D.HUD.Undo": "Desfazer",
+  "F3D.Notify.Paused": "O jogo está pausado.",
+  "F3D.Notify.Blocked": "Uma parede bloqueia esse movimento.",
+  "F3D.Notify.DoorLocked": "Esta porta está trancada.",
+  "F3D.Settings.Fog3d.Name": "Névoa de guerra no 3D",
+  "F3D.Settings.Fog3d.Hint": "Jogadores só veem os quadrados que seus tokens enxergam (quadrados explorados ficam escurecidos). Usa a opção de visão de tokens da cena."
 }

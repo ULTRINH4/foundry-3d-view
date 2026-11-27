@@ -225,3 +225,50 @@ export function autoHeightsFromWalls(walls, grid, { mode = "outside", step = gri
   }
   return map;
 }
+
+/* ------------------------------------------------------------------------------------------ */
+/* Brush & history                                                                             */
+/* ------------------------------------------------------------------------------------------ */
+
+/** Cells of a square brush of odd `size` (1, 3, 5...) centred on a cell, clipped to the map. */
+export function brushCells(map, col, row, size = 1) {
+  const r = Math.max(0, Math.floor((size - 1) / 2));
+  const out = [];
+  for (let dr = -r; dr <= r; dr++) {
+    for (let dc = -r; dc <= r; dc++) {
+      const c = col + dc, w = row + dr;
+      if (c >= 0 && w >= 0 && c < map.cols && w < map.rows) out.push({ col: c, row: w });
+    }
+  }
+  return out;
+}
+
+/** Add `delta` to every cell of a brush (clamped). Returns a new map. */
+export function bumpBrush(map, col, row, size, delta, limits = {}) {
+  const { min = 0, max = Infinity } = limits;
+  const data = map.data.slice();
+  for (const cell of brushCells(map, col, row, size)) {
+    const i = cell.row * map.cols + cell.col;
+    data[i] = roundHeight(Math.min(max, Math.max(min, (data[i] || 0) + delta)));
+  }
+  return { cols: map.cols, rows: map.rows, data };
+}
+
+/** Bounded undo stack of height maps. */
+export class HeightHistory {
+  constructor(limit = 50) {
+    this.limit = limit;
+    this.stack = [];
+  }
+  push(map) {
+    this.stack.push(map);
+    if (this.stack.length > this.limit) this.stack.shift();
+  }
+  /** Returns the previous map, or null when there is nothing to undo. */
+  pop() {
+    return this.stack.pop() ?? null;
+  }
+  get size() {
+    return this.stack.length;
+  }
+}

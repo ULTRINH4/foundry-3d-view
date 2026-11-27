@@ -27,6 +27,9 @@ const walls = [
   wall(16, 9, 17, 9), wall(17, 9, 17, 10), wall(17, 10, 16, 10), wall(16, 10, 16, 9),
   // Room C under A (x 3..8, y 9..14), reached through the secret door
   wall(3, 9, 3, 14), wall(8, 9, 8, 14), wall(3, 14, 8, 14),
+  // Level 2: railing around a balcony in room B (x 18..22, y 8..13) at 10 ft
+  wall(18, 8, 22, 8, { level: "balcony", flags: { "wall-height": { bottom: 10, top: 13 } } }),
+  wall(18, 8, 18, 13, { level: "balcony", flags: { "wall-height": { bottom: 10, top: 13 } } }),
 ];
 
 const g = makeGrid(grid);
@@ -44,6 +47,25 @@ const tokens = [
   tok("boss", "Ogre", 19, 4, { disposition: -1, src: "gen:boss", width: 2, height: 2 }),
   tok("goblin", "Goblin", 15, 11, { disposition: -1, src: "gen:goblin" }),
   tok("ghost", "Hidden spy", 5, 12, { disposition: -1, src: "gen:ghost", hidden: true }),
+  tok("archer", "Archer", 20, 10, { disposition: -1, src: "gen:archer", elevation: 10, level: "balcony" }),
+];
+tokens[0].light = { dim: 30, bright: 15, color: "#ffb35c" }; // the hero carries a torch
+
+const tiles = [
+  // A rug in room A (floor tile) and a roof over room C (overhead: elevation >= foreground 20)
+  { _id: "rug", x: P(4), y: P(3), width: 3 * size, height: 2 * size, rotation: 15, texture: { src: "gen:rug" }, elevation: 0, sort: 1 },
+  { _id: "roofC", x: P(3), y: P(9), width: 5 * size, height: 5 * size, texture: { src: "gen:roof" }, elevation: 20, sort: 2 },
+];
+
+const lights = [
+  { _id: "brazier", x: P(19.5), y: P(4.5), config: { dim: 40, bright: 20, color: "#ff7a2e" } },
+  { _id: "torchB", x: P(13.5), y: P(12.5), config: { dim: 25, bright: 10, color: "#ffd38a" } },
+  { _id: "torchC", x: P(5.5), y: P(13.5), config: { dim: 20, bright: 10, color: "#9ad0ff" } },
+];
+
+const levels = [
+  { id: "ground", name: "Ground", bottom: 0, background: { src: "gen:dungeon" } },
+  { id: "balcony", name: "Balcony", bottom: 10, background: { src: "gen:balcony" } },
 ];
 
 const out = {
@@ -53,6 +75,11 @@ const out = {
   backgroundColor: "#121214",
   walls,
   tokens,
+  tiles,
+  lights,
+  levels,
+  darkness: 0.55,
+  foregroundElevation: 20,
   heights,
 };
 const file = join(dirname(fileURLToPath(import.meta.url)), "sample-scene.json");

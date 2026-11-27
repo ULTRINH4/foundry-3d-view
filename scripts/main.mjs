@@ -34,6 +34,16 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true,
   });
+  game.settings.register(MODULE_ID, "fog3d", {
+    name: "F3D.Settings.Fog3d.Name",
+    hint: "F3D.Settings.Fog3d.Hint",
+    scope: "world",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
+  game.settings.register(MODULE_ID, "cutaway", { scope: "client", config: false, type: Boolean, default: false });
+  game.settings.register(MODULE_ID, "showRoofs", { scope: "client", config: false, type: Boolean, default: true });
   game.settings.register(MODULE_ID, "windowed", {
     scope: "client",
     config: false,
@@ -61,6 +71,8 @@ Hooks.once("ready", () => {
       get isOpen() {
         return controller.isOpen;
       },
+      /** Internal handle for debugging and the dev harness; not a stable API. */
+      _controller: controller,
     };
   }
 });

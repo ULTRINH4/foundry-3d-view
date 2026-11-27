@@ -8,12 +8,19 @@
  *   walls:      wallData()[]
  *   tokens:     tokenData()[]
  *   heights:    { cols, rows, data }            // grid distance units
+ *   tiles:      tileData()[]
+ *   lights:     lightData()[] (+ token lights)  // canvas px, radii in grid units
+ *   darkness:   0..1
+ *   foregroundElevation: number                 // tiles at/above it are roofs
+ *   levels:     [{ id, name, bottom, top, background:{src,x,y,width,height} }]  // [] = single level
  * }
+ * Walls, tokens and tiles carry `levelIndex` (0 = ground / only level).
  */
 import { makeGrid } from "./coords.mjs";
 import { normalizeHeightMap } from "./heights.mjs";
 import { wallData } from "./walls.mjs";
 import { MODULE_ID } from "./constants.mjs";
+import { tileData, lightData, tokenLightData, levelsFromScene, levelIndexFor } from "./scene-extras.mjs";
 
 /** Normalize a token document (or plain object) to what the renderer needs. */
 export function tokenData(doc) {
@@ -70,13 +77,34 @@ export function buildSceneModel(scene, dimensions) {
     distance: dimensions.distance ?? scene.grid?.distance,
   });
   const bg = sceneBackground(scene);
-  const walls = Array.from(scene.walls ?? []).map(wallData);
-  const tokens = Array.from(scene.tokens ?? []).map(tokenData);
+  const levels = levelsFromScene(scene).map((l) => ({
+    ...l,
+    background: {
+      src: l.background.src,
+      x: grid.sceneX + l.background.offsetX,
+      y: grid.sceneY + l.background.offsetY,
+      width: grid.sceneWidth,
+      height: grid.sceneHeight,
+    },
+  }));
+  const withLevel = (doc, data) => ({ ...data, levelIndex: levelIndexFor(doc, levels) });
+  const walls = Array.from(scene.walls ?? []).map((d) => {
+    const w = wallData(d);
+    return withLevel({ level: d.level, levels: d.levels, elevation: w.bottom ?? 0 }, w);
+  });
+  const tokenDocs = Array.from(scene.tokens ?? []);
+  const tokens = tokenDocs.map((d) => withLevel(d, tokenData(d)));
+  const tiles = Array.from(scene.tiles ?? []).map((d) => withLevel(d, tileData(d)));
+  const lights = [
+    ...Array.from(scene.lights ?? []).map(lightData),
+    ...tokenDocs.map(tokenLightData).filter(Boolean),
+  ];
   const heights = normalizeHeightMap(scene.flags?.[MODULE_ID]?.heights, grid.cols, grid.rows);
+  const baseBg = levels[0]?.background?.src ? { src: levels[0].background.src, offsetX: levels[0].background.x - grid.sceneX, offsetY: levels[0].background.y - grid.sceneY } : bg;
   return {
     grid,
     background: {
-      src: bg.src,
+      src: bg.src ?? baseBg.src,
       x: grid.sceneX + bg.offsetX,
       y: grid.sceneY + bg.offsetY,
       width: grid.sceneWidth,
@@ -85,6 +113,11 @@ export function buildSceneModel(scene, dimensions) {
     backgroundColor: scene.backgroundColor ?? "#1b1b1f",
     walls,
     tokens,
+    tiles,
+    lights,
+    darkness: Number(scene.environment?.darknessLevel ?? scene.darkness ?? 0) || 0,
+    foregroundElevation: Number(scene.foregroundElevation ?? scene.grid?.distance * 4) || 20,
+    levels,
     heights,
   };
 }
@@ -92,6 +125,19 @@ export function buildSceneModel(scene, dimensions) {
 /** Same as buildSceneModel but from a plain JSON description (dev page / tests). */
 export function modelFromJSON(json) {
   const grid = makeGrid(json.grid);
+  const levels = (json.levels ?? []).map((l, i) => ({
+    id: l.id ?? `level${i}`,
+    name: l.name ?? `Level ${i + 1}`,
+    bottom: Number(l.bottom) || 0,
+    top: l.top ?? Infinity,
+    background: {
+      src: l.background?.src ?? null,
+      x: l.background?.x ?? grid.sceneX,
+      y: l.background?.y ?? grid.sceneY,
+      width: l.background?.width ?? grid.sceneWidth,
+      height: l.background?.height ?? grid.sceneHeight,
+    },
+  }));
   return {
     grid,
     background: {
@@ -102,8 +148,13 @@ export function modelFromJSON(json) {
       height: json.background?.height ?? grid.sceneHeight,
     },
     backgroundColor: json.backgroundColor ?? "#1b1b1f",
-    walls: (json.walls ?? []).map(wallData),
-    tokens: (json.tokens ?? []).map(tokenData),
+    walls: (json.walls ?? []).map((d) => ({ ...wallData(d), levelIndex: levelIndexFor(d, levels) })),
+    tokens: (json.tokens ?? []).map((d) => ({ ...tokenData(d), levelIndex: levelIndexFor(d, levels) })),
+    tiles: (json.tiles ?? []).map((d) => ({ ...tileData(d), levelIndex: levelIndexFor(d, levels) })),
+    lights: [...(json.lights ?? []).map(lightData), ...(json.tokens ?? []).map(tokenLightData).filter(Boolean)],
+    darkness: Number(json.darkness) || 0,
+    foregroundElevation: Number(json.foregroundElevation ?? 20),
+    levels,
     heights: normalizeHeightMap(json.heights, grid.cols, grid.rows),
   };
 }
