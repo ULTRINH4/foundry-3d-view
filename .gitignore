@@ -1,2 +1,3 @@
 node_modules/
 dev/screenshots/*.tmp
+dist/

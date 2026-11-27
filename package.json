@@ -10,7 +10,9 @@
     "dev": "node tools/serve.mjs",
     "screenshot": "node tools/screenshot.mjs",
     "selftest": "node tools/selftest.mjs",
-    "e2e": "node tools/foundry-e2e.mjs"
+    "e2e": "node tools/foundry-e2e.mjs",
+    "build": "node tools/release.mjs",
+    "release": "node tools/release.mjs --publish"
   },
   "license": "MIT",
   "devDependencies": {

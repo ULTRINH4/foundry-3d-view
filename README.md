@@ -38,7 +38,19 @@ UI text is in English and pt-BR (`lang/`).
 
 ## Installing into Foundry
 
-To install, put this folder in your Foundry data folder under `Data/modules/foundry-3d-view` (the folder name must equal the `id` in `module.json`).
+### From the manifest URL (recommended: Foundry updates it for you)
+
+In Foundry's setup screen, go to **Add-on Modules → Install Module**. Paste this into **Manifest URL** and click **Install**:
+
+```
+https://github.com/ULTRINH4/foundry-3d-view/releases/latest/download/module.json
+```
+
+That URL always points at the newest release. When a new version comes out, **Update** (or **Update All**) in Foundry's Add-on Modules tab installs it.
+
+### For development (symlink)
+
+To install from source, put this folder in your Foundry data folder under `Data/modules/foundry-3d-view` (the folder name must equal the `id` in `module.json`).
 
 Windows, with a symlink so edits show up right away (run in an admin PowerShell, or with Developer Mode on):
 
@@ -140,6 +152,8 @@ npm run e2e          # end-to-end against a running real Foundry server (see abo
 npm run screenshot   # renders dev/screenshots/*.png
 npm run dev          # static server → http://localhost:8173/dev/  (and /dev/foundry-mock.html, /dev/perf.html)
 npm run vendor       # re-copy three.js from node_modules into vendor/three
+npm run build        # dist/foundry-3d-view.zip + dist/module.json for the current version
+npm run release -- 0.3.2   # bump version, commit, tag v0.3.2, push, create the GitHub release
 node dev/make-sample.mjs   # regenerate dev/sample-scene.json
 ```
 
@@ -168,6 +182,17 @@ Screenshots (`dev/screenshots/`):
 | `foundry-real-wall-config.png` | Real Foundry: the "3D texture" field in the Wall config sheet |
 | `foundry-real-player.png` | Real Foundry: the player view with fog |
 | `foundry-real-player-door.png` | Real Foundry: the player after opening the door from 3D |
+
+### Releasing a new version
+
+Run `npm run release -- <version>`. It needs a clean working tree and the `gh` CLI logged in. It:
+1. writes `version`, `manifest`, `download`, `url` and `bugs` into `module.json` (and the version into `package.json`), then commits;
+2. builds `dist/foundry-3d-view.zip`. The zip holds only the runtime files (`module.json` at its root, plus `scripts/`, `styles/`, `lang/`, `vendor/`, `LICENSE` and `README.md`), and its paths use forward slashes so Linux servers can install it;
+3. tags `v<version>`, pushes `main` and the tag, and creates the GitHub release with `module.json` and the zip as assets.
+
+Foundry reads `manifest` (`releases/latest/download/module.json`) to look for updates, and `download` (the zip of that exact version) to install. **The repository must be public** for Foundry to download the files.
+
+The install and update path was tested against a real Foundry v13 server. It installed 0.3.1 from a manifest URL, updated it to 0.3.2, and opened the 3D view from the installed zip.
 
 ### Layout
 
