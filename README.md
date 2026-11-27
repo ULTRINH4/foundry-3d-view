@@ -28,13 +28,13 @@ toggle on and off.
 | **Wall heights (half walls)** | The Wall config sheet has a **3D height** field, in squares above the ground: 0.5 is a half wall, 0.25 a low wall. Wall Height module flags still win. In **Foundry v14**, walls have no height of their own, because height comes from **scene levels**. The "Walls span their level" setting makes a wall without its own height fill its level's height. |
 | **Bulk wall tool** | In the **Walls controls**, select several walls and click the paint-roller button (GM). Apply a texture and/or a height preset (full, 1.5, half, low, custom, module default) to all of them at once, or remove their 3D texture. |
 | Doors | Each door is its own mesh, hinged at the first point of the wall. It swings open or closed with an animation on `updateWall`. To players, a closed secret door looks like a plain wall. |
-| **Cutaway walls** | A toggle sinks the walls between the camera and the point it looks at, so you can see into rooms. Walls rise back smoothly when you turn the camera. |
+| **Walls: up / cutaway / down (The Sims style)** | The walls button cycles three modes. **Cutaway** (the default) works like The Sims: the module finds the rooms from the walls and sinks the **front walls of each room** (the ones hiding a room from the camera) to a low stub with a light cap, while the **back walls stay up**. It follows the camera: turn it and the walls that end up in front sink, the others rise, animated. Walls standing between the camera and a visible token sink too, so maps without closed rooms (caves, loose walls) work. Doors stay clickable when cut. **Down** lowers every wall, **Up** shows them all. It applies to the viewed level; the fog of war still hides what players haven't seen. |
 | Tokens | Token art is shown as a card on a base coloured by disposition. Cards follow Foundry's movement animation (`refreshToken`). Selected tokens get a yellow ring. **Sprite facing** (setting and toolbar): **Standee** turns toward the camera and leans back when seen from above. **Billboard** is always parallel to the screen, like **Final Fantasy Tactics / Doom** sprites. **Fixed** is a paper standee that follows the token's rotation. **Animated tokens:** video (webm) token art plays in 3D. |
 | **Directional & animated sprites (Doom-style)** | The Token config sheet (Appearance tab) can take a **sprite sheet**: rows are view directions (1, 4 or 8) and columns are animation frames. With 4 directions the rows are front, left, back, right. With 8 they are front, front-left, left, back-left, back, back-right, right, front-right. The 3D view picks the row from the angle between the token's facing (its rotation, 0 = facing down the map) and the camera. Columns loop at the fps you set. |
 | **Tactics-style movement** | Inspired by the tactics RPGs (Fire Emblem, FFT). **Select** a token you own (click, or Enter on it) and the squares it can reach turn **blue**, with a **red** band around them (attack reach). A **grid cursor** follows the mouse, or the **arrow keys / WASD**: "up" always means "away from the camera", whatever the angle, and the camera follows the cursor. A **yellow arrow** shows the path to the cursor, with the distance and height difference. **Click or Enter** on a blue square and the token **walks there square by square** (Foundry waypoints), hopping up and down ledges. **Esc** or right-click cancels. Walls, closed doors and enemies block; climbing a ledge higher than the height step costs +1; diagonals follow the scene rule. Players stay inside the blue area (and a paused game refuses moves); the GM can move anywhere. Range: **world setting** (default 6 squares, red band 1) or **per token** in the Token config ("3D view" fieldset). **Click a door** to open or close it; locked doors are refused for players. |
 | **Fog of war & vision** | The 3D view shows **what the selected token sees**. For players this is always on. For the **GM**, it applies while a token with vision is selected and switches off when it is released, just like the 2D canvas. Tokens the viewer can't see are hidden. Visibility is read from Foundry's own vision mask (or `testVisibility` as a fallback), so walls, lights, darkvision and vision modes all count. Explored squares stay dimmed for the session. Walls, roofs and upper floors over unseen squares are not drawn. |
 | **Lights & darkness (Foundry lighting)** | The 3D view uses **Foundry's own rendered lighting**. While the 3D view covers the screen, the 2D canvas behind it is framed on the whole scene. Several times a second, the module reads Foundry's illumination, coloured light and vision layers at up to 4 samples per square and applies them to the 3D terrain, walls, props and tokens. So animated lights, light colours, darkness, global illumination, darkness regions, vision modes and adaptive lights look the same as in 2D. In window mode, or if sampling isn't possible, it falls back to a light map computed from the light sources. World setting. |
-| **Tiles** | Floor tiles lie on the terrain, with rotation, mirroring, alpha and sort order. Overhead tiles (elevation at or above the scene's foreground elevation) become roofs at wall height. A roof fades out when your token is under it, when cutaway is on, or when the **Roofs** toggle is off. To players, hidden tiles are not shown. |
+| **Tiles** | Floor tiles lie on the terrain, with rotation, mirroring, alpha and sort order. Overhead tiles (elevation at or above the scene's foreground elevation) become roofs at wall height. A roof fades out when your token is under it, when the walls are cut or down, or when the **Roofs** toggle is off. To players, hidden tiles are not shown. |
 | **3D models (props)** | In the Tile config sheet, choose a **built-in low-poly model** (tree, pine, bush, rock, crate, barrel, table, chair, bench, car, pillar, lamp post) or a **custom .glb/.gltf** file. The tile is drawn as that model, filling its footprint and following its rotation, with a height multiplier. Models stand on the terrain and respect fog and lighting. **Export:** the cubes button in the Tiles controls, or `game.modules.get("foundry-3d-view").api.exportModels()`, saves the built-in models as **.glb files** to `foundry-3d-view-models/`, ready to use as assets in Foundry or elsewhere. |
 | **Levels (v14)** | Native scene levels are supported. Each upper level is a floor plane at its elevation, using the level's image; transparent parts stay see-through. Walls, tiles and lights are placed by their `levels`, tokens by their `level`. A wall with no levels sits on the ground. **The 3D view follows the level you are viewing in Foundry.** When you switch level, the floors above it, and their walls and tokens, are hidden. Roofs use the viewed level's top as their height. The **Visible levels** selector starts at the viewed level and can show all levels. Players never see tokens on other levels (v14 gives them no placeable). Editing a level rebuilds the view. The background and scene colour are read from the levels, so the deprecated v14 `Scene#background` / `backgroundColor` / `foregroundElevation` getters are never touched. |
 | Camera | **Free camera:** orbit (left-drag), pan (right-drag), zoom (wheel), animated 45° turns, recenter, and top-down. **Tactics camera (Final Fantasy Tactics style, the default):** an orthographic camera at a fixed 30° elevation on a diagonal, with **animated 90° turns** (toolbar buttons, or **Q/E** with the mouse over the 3D view), wheel zoom, drag to pan (left or middle button) and top-down. Toggle it from the toolbar, or pick the free camera in the settings. Billboard sprites are the default facing. |
@@ -44,7 +44,7 @@ toggle on and off.
 Settings:
 - **World:** wall height, wall look, wall/door/window/glass textures, texture size, windows with an opening, invisible walls (glass/hidden), walls span their level (v14), height paint step, fog of war in 3D, Foundry lighting in 3D, limit movement to the reachable squares, movement range and attack reach.
 - **Per client:** camera (tactics/free), sprite facing, follow combat turns, combat animations in 3D, portraits over tokens, and show grid.
-The cutaway, roofs and window toggles are remembered per client.
+The walls mode, roofs and window toggles are remembered per client.
 UI text is in English and pt-BR (`lang/`).
 
 ## Installing into Foundry
@@ -108,7 +108,8 @@ What it covers:
   - right-click to release;
   - clicking a door to open it.
 - **Tactics movement (player):** blue and red squares, walls limiting the blue area, the keyboard cursor, the path arrow, Enter walking the token along Foundry waypoints, a far square refused, Esc clearing the range.
-- **GM tools:** height paint saved to the scene flag, plus undo; cutaway, saved as a client setting.
+- **GM tools:** height paint saved to the scene flag, plus undo.
+- **Walls modes:** The Sims cutaway by default (front walls cut, back walls up, caps drawn), following the camera when it turns around; walls down and up; the mode saved as a client setting.
 - **Wall look:**
   - walls inherit the map by default;
   - the wall and door texture settings apply live, and textures uploaded to Foundry load;
@@ -159,7 +160,7 @@ $env:FOUNDRY_URL="http://localhost:30013"; $env:FOUNDRY_SYSTEM="ordemparanormal"
 Foundry v13 needs Node 20 to 22 (Node 24 is refused), and a portable Node 22 works. Foundry v14 needs Node 24. For v14, run the installed app's `resources/app/main.mjs` the same way, with `FOUNDRY_SYSTEM=CoC7` or any v14 system.
 
 Other layers:
-1. **Unit tests** (`npm test`, 103, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
+1. **Unit tests** (`npm test`, 126, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, the cutaway (rooms, front/back walls, walls hiding tokens), lights, tiles, levels, measurement and the scene model.
 2. **Dev page** (`dev/index.html`). The renderer, toolbar and interaction on a generated sample dungeon, with no Foundry needed.
 3. **Mock Foundry harness** (`dev/foundry-mock.html`). The real module runs against fake Foundry globals, as GM, as a player, and with v14-style levels.
 4. **Headless self-tests** (`npm run selftest`, 164 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
@@ -196,7 +197,7 @@ npm run release -- 0.3.2   # bump version, commit, tag v0.3.2, push, create the 
 node dev/make-sample.mjs   # regenerate dev/sample-scene.json
 ```
 
-Dev page URL params: `?player=1` (fog and vision on), `?topdown=1`, `?cutaway=1`, `?paint=1`, `?az=<deg>`, `?select=hero&hover=11,5`.
+Dev page URL params: `?player=1` (fog and vision on), `?topdown=1`, `?cutaway=1` (The Sims cutaway), `?cut=up|cutaway|down`, `?paint=1`, `?az=<deg>`, `?select=hero&hover=11,5`.
 The page's buttons simulate the Foundry hooks: door update, token move, player view, darkness.
 
 Screenshots (`dev/screenshots/`):
@@ -207,7 +208,7 @@ Screenshots (`dev/screenshots/`):
 | `dev-page-topdown.png` | Top-down view |
 | `dev-page-walls-texture.png` | Wall look "texture": bricks on walls, planks on doors |
 | `dev-page-walls-map.png` | Wall look "inherit from the map" |
-| `dev-page-cutaway.png` | Cutaway walls |
+| `dev-page-cutaway.png` | The Sims cutaway: front walls of each room cut, back walls up |
 | `dev-page-ruler.png` | Ruler with distance |
 | `dev-page-fog.png` | Player fog, top-down |
 | `dev-page-player.png` | Player fog, in perspective |
@@ -216,7 +217,7 @@ Screenshots (`dev/screenshots/`):
 | `foundry-mock-player.png` | The real module in the mock Foundry, as a player |
 | `foundry-real-v13-gm.png` | **Real Foundry v13**: the GM with the 3D view open |
 | `foundry-real-v13-ruler.png` | Real Foundry: a selected token and the hover ruler |
-| `foundry-real-v13-cutaway.png` | Real Foundry: cutaway walls |
+| `foundry-real-v13-cutaway.png` | Real Foundry: The Sims cutaway |
 | `foundry-real-v13-walls-texture.png` | Real Foundry: textured walls |
 | `foundry-real-v13-wall-config.png` | Real Foundry: the "3D texture" field in the Wall config sheet |
 | `foundry-real-v13-player.png` | Real Foundry: the player view with fog |
@@ -265,11 +266,12 @@ The origin is the centre of the scene rect. Vertical values are in grid distance
 - **Fog is per square.** Edges are softened by filtering, but it is not the exact vision polygon.
 - **Fog memory lasts only for the session.** Explored squares are kept while the page is open; Foundry's saved fog exploration is not read yet.
 - **Lights** are three.js point lights, so they don't cast shadows through walls in 3D. Line of sight and fog are still exact per square.
+- **Cutaway rooms come from the walls.** A block of solid rock fully enclosed by walls (common on dungeon maps) also counts as a "room", so the walls in front of it sink too.
 - **Doors and tokens** are separate meshes. That is fine for normal scenes; a map with hundreds of doors adds draw calls.
 - **Not done yet:**
   - token rings / dynamic ring art;
   - a sloped stair or ramp tool;
-  - waypoint movement in 3D (Foundry v13 `move` API) and a drag ruler;
+  - a drag ruler;
   - automatically showing the level a token is on (v14);
   - door sounds.
 

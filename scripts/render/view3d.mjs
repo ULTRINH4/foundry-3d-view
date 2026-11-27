@@ -17,6 +17,7 @@ import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
 import { unlitBrightness } from "../core/lighting.mjs";
 import { createBuiltinModel, isCustomModel, loadCustomModel } from "./models.mjs";
 import { FOG } from "../core/vision.mjs";
+import { CUT_MODES, normalizeCutMode, indoorMap, wallCutDecision, occludingWalls } from "../core/cutaway.mjs";
 import {
   SPRITE_FACING, tokenFacingYaw, directionRow, animationColumn, sheetCellUV, snapTacticsYaw,
 } from "../core/sprites.mjs";
@@ -29,9 +30,9 @@ const DEFAULTS = {
   wallThickness: 0.12,
   showGrid: true,
   isGM: false,
-  cutaway: false,
+  cutMode: "cutaway", // walls: "up", "cutaway" (The Sims: front walls of each room sink) or "down"
   showRoofs: true,
-  cutawayHeight: 0.22, // world units walls are lowered to
+  cutawayHeight: 0.3, // world units walls are lowered to (about 1/5 of a wall)
   maxLights: 8,
   // Wall look: "map" (inherit the scene image), "texture" (tiled wallTexture) or "flat".
   wallMode: "map",
@@ -538,6 +539,8 @@ export class View3D {
   }
 
   upsertWall(w) {
+    this._indoor = null; // rooms may have changed
+    this._capsDirty = true;
     this.allWalls.set(w.id, w); // every wall, drawn or not, so style changes can bring them back
     const existing = this.walls.get(w.id);
     if (!isRenderableWall(w, { invisible: this.options.invisibleWalls })) {
@@ -598,7 +601,7 @@ export class View3D {
       pivot.add(mesh);
       this.wallGroup.add(pivot);
       const box = wallBox(w, this.grid, opts);
-      entry = { data: w, object: pivot, mesh, height, cut, materialKey: key, center: { x: box.cx, z: box.cz }, door: { pivot, target: pose.angle } };
+      entry = { data: w, object: pivot, mesh, height, cut, box, materialKey: key, center: { x: box.cx, z: box.cz }, door: { pivot, target: pose.angle } };
     } else if (isGlass) {
       // Invisible wall: a see-through panel so it still has volume in 3D.
       const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness * 0.5 });
@@ -611,7 +614,7 @@ export class View3D {
       mesh.renderOrder = 3;
       mesh.userData.wallId = w.id;
       this.wallGroup.add(mesh);
-      entry = { data: w, object: mesh, mesh, height, cut, materialKey: gkey, center: { x: box.cx, z: box.cz } };
+      entry = { data: w, object: mesh, mesh, height, cut, box, materialKey: gkey, center: { x: box.cx, z: box.cz } };
     } else if (isWindow) {
       // Window: solid below the sill and above the lintel, a glass pane in the opening.
       const box = wallBox(w, this.grid, { ...opts, thickness: this.options.wallThickness });
@@ -637,7 +640,7 @@ export class View3D {
       group.scale.y = cut;
       this.wallGroup.add(group);
       entry = {
-        data: w, object: group, mesh: group, height, cut, materialKey: key, isWindow: true,
+        data: w, object: group, mesh: group, height, cut, box, materialKey: key, isWindow: true,
         center: { x: box.cx, z: box.cz }, applyCut: (c) => (group.scale.y = c),
       };
     } else {
@@ -664,6 +667,8 @@ export class View3D {
   _dropWall(id) {
     const w = this.walls.get(id);
     if (!w) return;
+    this._indoor = null;
+    this._capsDirty = true;
     this.walls.delete(id);
     if (!w.instanced) {
       w.object.removeFromParent();
@@ -1027,9 +1032,96 @@ export class View3D {
     return w.instanced ? this._levelVisible(w.data.levelIndex) : w.object.visible;
   }
 
-  /** Lower walls between the camera and its target (tactics cutaway). */
+  /** Old boolean API: on = The Sims cutaway, off = walls up. */
   setCutaway(on) {
-    this.options.cutaway = !!on;
+    this.setCutMode(on ? CUT_MODES.CUTAWAY : CUT_MODES.UP);
+  }
+
+  /** Walls "up", "cutaway" (front walls of each room sink, The Sims style) or "down". */
+  setCutMode(mode) {
+    this.options.cutMode = normalizeCutMode(mode);
+    this._cutCheck = Infinity; // recompute on the next frame
+    this._cutKey = null;
+  }
+
+  get cutMode() {
+    return this.options.cutMode;
+  }
+
+  /**
+   * Which walls the cutaway lowers right now. Recomputed when the camera moves (and twice a
+   * second for moving tokens); walls seen edge-on keep their previous state.
+   */
+  _updateCutSet(dt) {
+    this._cutCheck = (this._cutCheck ?? Infinity) + dt;
+    const cam = this.camera.position;
+    const key = cam.x.toFixed(2) + "," + cam.y.toFixed(2) + "," + cam.z.toFixed(2) + (this._indoor ? "" : "!");
+    if (key === this._cutKey && this._cutCheck < 0.5) return;
+    if (this._cutCheck < 0.12) return; // throttle while the camera moves
+    this._cutKey = key;
+    this._cutCheck = 0;
+    if (!this._indoor) {
+      // Rooms per level, from every drawn wall (doors included, open or not).
+      const byLevel = new Map();
+      for (const [, w] of this.walls) {
+        const lv = w.data.levelIndex ?? 0;
+        if (!byLevel.has(lv)) byLevel.set(lv, []);
+        byLevel.get(lv).push(w.data);
+      }
+      this._indoor = new Map([...byLevel].map(([lv, list]) => [lv, indoorMap(list, this.grid)]));
+    }
+    const camCanvas = worldToCanvas(this.grid, cam.x, cam.z);
+    const prev = this._cutSet ?? new Set();
+    const next = new Set();
+    const segs = [];
+    for (const [id, w] of this.walls) {
+      if (!this._levelVisible(w.data.levelIndex)) continue;
+      const indoor = this._indoor.get(w.data.levelIndex ?? 0);
+      const d = indoor ? wallCutDecision(w.data.c, camCanvas, indoor, this.grid) : false;
+      if (d === true || (d === null && prev.has(id))) next.add(id);
+      if (w.box) {
+        const hx = (Math.cos(w.box.angle) * w.box.length) / 2, hz = (-Math.sin(w.box.angle) * w.box.length) / 2;
+        segs.push({ id, ax: w.box.cx - hx, az: w.box.cz - hz, bx: w.box.cx + hx, bz: w.box.cz + hz, top: w.box.top });
+      }
+    }
+    // Walls hiding a visible token sink too (maps without closed rooms).
+    const pts = [];
+    for (const [, t] of this.tokens) {
+      if (!t.group.visible) continue;
+      pts.push({ x: t.group.position.x, y: t.group.position.y + 0.45, z: t.group.position.z });
+    }
+    for (const id of occludingWalls(segs, pts, cam)) next.add(id);
+    this._cutSet = next;
+  }
+
+  /** Light caps on top of lowered walls (the cut edge, like The Sims). */
+  _updateWallCaps() {
+    const list = [];
+    for (const [, w] of this.walls) {
+      if (w.door || !w.box || w.cut > 0.97) continue;
+      if (w.instanced ? !this._levelVisible(w.data.levelIndex) : !w.object.visible) continue;
+      list.push(w);
+    }
+    if (!this.capMesh || this.capMesh.instanceMatrix.count < list.length) {
+      const cap = Math.max(64, list.length * 2);
+      this.capMesh?.removeFromParent();
+      this.capMesh?.dispose();
+      const mat = this.capMaterial ?? (this.capMaterial = this._fogged(new THREE.MeshLambertMaterial({ color: 0xe3d3b0 })));
+      this.capMesh = new THREE.InstancedMesh(this.boxGeometry, mat, cap);
+      this.capMesh.frustumCulled = false;
+      this.capMesh.userData.isWallCap = true;
+      this.wallGroup.add(this.capMesh);
+    }
+    list.forEach((w, i) => {
+      const b = w.box;
+      _p.set(b.cx, b.bottom + w.height * w.cut, b.cz);
+      _q.setFromAxisAngle(_up, b.angle);
+      _s.set(b.length + b.thickness * 1.3, 0.035, b.thickness * 1.35);
+      _m.compose(_p, _q, _s);
+      this.capMesh.setMatrixAt(i, _m);
+    });
+    this.capMesh.count = list.length;
+    this.capMesh.instanceMatrix.needsUpdate = true;
   }
 
   /* ---------------------------------------------------------------------------------------- */
@@ -1984,19 +2076,27 @@ export class View3D {
       }
     }
 
-    // Doors swing; walls toward the camera sink when cutaway is on.
-    const cutaway = this.options.cutaway && !this.topDown;
-    for (const [, w] of this.walls) {
+    // Doors swing; walls sink with the cutaway (The Sims: front walls of each room) or all down.
+    const mode = this.topDown ? CUT_MODES.UP : this.options.cutMode;
+    const cutaway = mode !== CUT_MODES.UP;
+    if (mode === CUT_MODES.CUTAWAY) this._updateCutSet(dt);
+    let capsDirty = this._capsDirty ?? true;
+    for (const [id, w] of this.walls) {
       if (w.door) w.door.pivot.rotation.y += (w.door.target - w.door.pivot.rotation.y) * k;
       const low = Math.min(1, this.options.cutawayHeight / (w.height || 1));
-      const goal = cutaway && isWallTowardCamera(w.center.x, w.center.z, target, cam) ? low : 1;
+      const down = mode === CUT_MODES.DOWN || (mode === CUT_MODES.CUTAWAY && this._cutSet?.has(id));
+      const goal = down ? low : 1;
       if (Math.abs(goal - w.cut) > 1e-3) {
         w.cut += (goal - w.cut) * k;
+        if (Math.abs(goal - w.cut) <= 1e-3) w.cut = goal;
         if (w.instanced) this._writeWallMatrix(w);
         else if (w.applyCut) w.applyCut(w.cut);
         else w.mesh.scale.y = w.height * w.cut;
+        capsDirty = true;
       }
     }
+    if (capsDirty) this._updateWallCaps();
+    this._capsDirty = false;
 
     // Roofs fade out when disabled, in cutaway, or when one of the focus tokens is under them.
     for (const [, t] of this.tiles) {

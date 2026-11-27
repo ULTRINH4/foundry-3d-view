@@ -197,7 +197,8 @@ Hooks.once("init", () => {
     default: false,
     onChange: (v) => controller.view?.setPortraits(v),
   });
-  game.settings.register(MODULE_ID, "cutaway", { scope: "client", config: false, type: Boolean, default: false });
+  // Walls: "up", "cutaway" (The Sims) or "down" — the toolbar button cycles them.
+  game.settings.register(MODULE_ID, "cutMode", { scope: "client", config: false, type: String, default: "cutaway" });
   game.settings.register(MODULE_ID, "cameraMode", {
     name: "F3D.Settings.CameraMode.Name",
     hint: "F3D.Settings.CameraMode.Hint",

@@ -448,12 +448,34 @@ await gm.locator('.f3d-btn[data-key="topDown"]').click();
 await gm.evaluate(() => game.modules.get("foundry-3d-view").api._controller.view.resetCamera());
 await sleep(800);
 
-// Cutaway toggle persists as a client setting
+// Walls: The Sims cutaway by default (front walls of each room sink, back walls stay up),
+// following the camera; the button cycles cutaway -> down -> up and persists per client.
+await sleep(1500);
+const sims = await gm.evaluate(async () => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  const cutIds = () => new Set([...v.walls].filter(([, w]) => w.cut < 0.5).map(([id]) => id));
+  const a = cutIds();
+  const out = { mode: v.cutMode, cut: a.size, up: [...v.walls.values()].filter((w) => w.cut > 0.99).length, caps: v.capMesh?.count ?? 0 };
+  v.rotateBy(180, { animate: false });
+  await new Promise((r) => setTimeout(r, 1500));
+  const b = cutIds();
+  out.follows = b.size > 0 && [...a].some((id) => !b.has(id)) && [...b].some((id) => !a.has(id));
+  v.rotateBy(-180, { animate: false });
+  await new Promise((r) => setTimeout(r, 1500));
+  return out;
+});
+check("The Sims cutaway is the default: front walls cut, back walls up", sims.mode === "cutaway" && sims.cut > 0 && sims.up > 0 && sims.caps > 0, JSON.stringify(sims));
+check("cutaway follows the camera (turning around swaps front and back walls)", sims.follows);
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-cutaway.png`) });
 await gm.locator('.f3d-btn[data-key="cutaway"]').click();
 await sleep(1500);
-check("cutaway lowers walls", await gm.evaluate(() => [...game.modules.get("foundry-3d-view").api._controller.view.walls.values()].some((w) => w.cut < 0.5)));
-check("cutaway saved to client settings", await gm.evaluate(() => game.settings.get("foundry-3d-view", "cutaway") === true));
-await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-cutaway.png`) });
+check("walls down: every wall lowered, saved to client settings", await gm.evaluate(() => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  return v.cutMode === "down" && [...v.walls.values()].every((w) => w.height * w.cut <= v.options.cutawayHeight + 0.02) && game.settings.get("foundry-3d-view", "cutMode") === "down";
+}));
+await gm.locator('.f3d-btn[data-key="cutaway"]').click();
+await sleep(1500);
+check("walls up: every wall back up", await gm.evaluate(() => [...game.modules.get("foundry-3d-view").api._controller.view.walls.values()].every((w) => w.cut > 0.95)));
 await gm.locator('.f3d-btn[data-key="cutaway"]').click();
 
 // Darkness change follows Foundry
@@ -658,7 +680,7 @@ const models = await gm.evaluate(async (files) => {
   ]);
   const v = game.modules.get("foundry-3d-view").api._controller.view;
   // Custom models load asynchronously: wait for them (up to ~10 s on a slow headless machine).
-  for (let i = 0; i < 40 && !v.tiles.get(custom.id)?.mesh; i++) await new Promise((ok) => setTimeout(ok, 250));
+  for (let i = 0; i < 40 && !(v.tiles.get(custom.id)?.mesh && v.tiles.get(builtin.id)?.isModel); i++) await new Promise((ok) => setTimeout(ok, 250));
   const a = v.tiles.get(builtin.id), b = v.tiles.get(custom.id);
   const meshes = (e) => { let n = 0; e?.mesh?.traverse((o) => o.isMesh && n++); return n; };
   const out = { builtin: !!a?.isModel && meshes(a) > 0, custom: !!b?.isModel && meshes(b) > 0, file: custom.getFlag("foundry-3d-view", "modelFile"), customEntry: !!b, customMesh: !!b?.mesh };

@@ -86,7 +86,7 @@ export class Tactics3DController {
       isGM: game.user.isGM,
       wallHeight: Number(game.settings.get(MODULE_ID, "wallHeight")) || 1.5,
       showGrid: game.settings.get(MODULE_ID, "showGrid"),
-      cutaway: game.settings.get(MODULE_ID, "cutaway"),
+      cutMode: game.settings.get(MODULE_ID, "cutMode"),
       showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
       startHidden: !game.user.isGM,
       cameraMode: game.settings.get(MODULE_ID, "cameraMode"),
@@ -123,13 +123,13 @@ export class Tactics3DController {
       levels: this.model.levels,
       viewedLevelIndex: this.model.viewedLevelIndex,
       initial: {
-        cutaway: game.settings.get(MODULE_ID, "cutaway"),
+        cutMode: game.settings.get(MODULE_ID, "cutMode"),
         showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
         cameraMode: game.settings.get(MODULE_ID, "cameraMode"),
         spriteFacing: game.settings.get(MODULE_ID, "spriteFacing"),
       },
-      onViewSettings: ({ cutaway, showRoofs, cameraMode, spriteFacing }) => {
-        game.settings.set(MODULE_ID, "cutaway", cutaway);
+      onViewSettings: ({ cutMode, showRoofs, cameraMode, spriteFacing }) => {
+        game.settings.set(MODULE_ID, "cutMode", cutMode);
         game.settings.set(MODULE_ID, "showRoofs", showRoofs);
         if (cameraMode) game.settings.set(MODULE_ID, "cameraMode", cameraMode);
         if (spriteFacing) game.settings.set(MODULE_ID, "spriteFacing", spriteFacing);

@@ -130,5 +130,9 @@
   "F3D.Settings.Portraits.Name": "Portraits above tokens",
   "F3D.Settings.Portraits.Hint": "Fire Emblem-style portrait of the token floating above its standee.",
   "F3D.TokenConfig.MoveRange": "Movement range (squares)",
-  "F3D.TokenConfig.AttackRange": "Attack range (squares)"
+  "F3D.TokenConfig.AttackRange": "Attack range (squares)",
+  "F3D.HUD.Walls": "Walls",
+  "F3D.HUD.WallsMode.up": "Up",
+  "F3D.HUD.WallsMode.cutaway": "Cutaway",
+  "F3D.HUD.WallsMode.down": "Down"
 }

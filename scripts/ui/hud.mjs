@@ -3,6 +3,7 @@
  * Foundry and on the standalone dev page.
  */
 import { bumpBrush, createHeightMap, autoHeightsFromWalls, HeightHistory } from "../core/heights.mjs";
+import { CUT_MODE_LIST, normalizeCutMode } from "../core/cutaway.mjs";
 
 const BRUSHES = [1, 3, 5];
 
@@ -19,7 +20,7 @@ const BRUSHES = [1, 3, 5];
  * @param {{id:string,name:string}[]} [o.levels]  scene levels (shown as a selector when > 1)
  * @param {number|null} [o.viewedLevelIndex]      level the selector starts at (v14 viewed level)
  * @param {(settings:object)=>void} [o.onViewSettings]  persist cutaway/roofs toggles
- * @param {{cutaway?:boolean, showRoofs?:boolean}} [o.initial]
+ * @param {{cutMode?:string, cutaway?:boolean, showRoofs?:boolean}} [o.initial]
  * @param {()=>{x:number,y:number}|null} [o.getFocus]
  * @param {()=>void} [o.onClose]
  * @param {(msg:string)=>Promise<boolean>} [o.confirm]
@@ -29,7 +30,7 @@ export function createHud(root, o) {
   const state = {
     painting: false,
     topDown: false,
-    cutaway: !!o.initial?.cutaway,
+    cutMode: normalizeCutMode(o.initial?.cutMode ?? o.initial?.cutaway),
     tactics: o.initial?.cameraMode === "tactics",
     spriteFacing: o.initial?.spriteFacing ?? "camera",
     showRoofs: o.initial?.showRoofs ?? true,
@@ -38,7 +39,7 @@ export function createHud(root, o) {
   const history = new HeightHistory(50);
   const bar = el("div", "f3d-hud");
   root.appendChild(bar);
-  view.setCutaway(state.cutaway);
+  view.setCutMode(state.cutMode);
   view.setShowRoofs(state.showRoofs);
 
   const button = (icon, label, onClick, cls = "") => {
@@ -67,7 +68,7 @@ export function createHud(root, o) {
   };
 
   const viewSettings = () => ({
-    cutaway: state.cutaway, showRoofs: state.showRoofs,
+    cutMode: state.cutMode, showRoofs: state.showRoofs,
     cameraMode: state.tactics ? "tactics" : "free", spriteFacing: state.spriteFacing,
   });
   const FACINGS = ["camera", "billboard", "standee"];
@@ -80,7 +81,26 @@ export function createHud(root, o) {
     button("fa-solid fa-rotate-left", t("F3D.HUD.RotateLeft"), () => view.rotateBy(state.tactics ? -90 : -45)),
     button("fa-solid fa-rotate-right", t("F3D.HUD.RotateRight"), () => view.rotateBy(state.tactics ? 90 : 45)),
     button("fa-solid fa-crosshairs", t("F3D.HUD.Recenter"), () => view.resetCamera(o.getFocus?.() ?? null)),
-    toggle("fa-solid fa-scissors", t("F3D.HUD.Cutaway"), "cutaway", (on) => view.setCutaway(on)),
+    (() => {
+      // Walls up / cutaway (The Sims) / down, like The Sims' wall buttons.
+      const ICONS = { up: "fa-solid fa-building", cutaway: "fa-solid fa-scissors", down: "fa-solid fa-grip-lines" };
+      const label = () => `${t("F3D.HUD.Walls")}: ${t(`F3D.HUD.WallsMode.${state.cutMode}`)}`;
+      const b = button(ICONS[state.cutMode], label(), () => {
+        state.cutMode = CUT_MODE_LIST[(CUT_MODE_LIST.indexOf(state.cutMode) + 1) % CUT_MODE_LIST.length];
+        view.setCutMode(state.cutMode);
+        b.querySelector("i").className = ICONS[state.cutMode];
+        b.querySelector("span").textContent = label();
+        b.title = label();
+        b.dataset.tooltip = label();
+        b.dataset.mode = state.cutMode;
+        b.classList.toggle("active", state.cutMode !== "up");
+        o.onViewSettings?.(viewSettings());
+      });
+      b.dataset.key = "cutaway";
+      b.dataset.mode = state.cutMode;
+      b.classList.toggle("active", state.cutMode !== "up");
+      return b;
+    })(),
     toggle("fa-solid fa-house-chimney", t("F3D.HUD.Roofs"), "showRoofs", (on) => view.setShowRoofs(on)),
     (() => {
       const b = button("fa-solid fa-person", facingLabel(), () => {

@@ -57,7 +57,7 @@ async function run() {
   const isGM = game.user.isGM;
 
   // Registration
-  r.settingsRegistered = ["wallHeight", "heightStep", "showGrid", "fog3d", "cutaway", "showRoofs", "windowed", "wallMode", "wallTexture", "doorTexture", "wallTextureScale"]
+  r.settingsRegistered = ["wallHeight", "heightStep", "showGrid", "fog3d", "cutMode", "showRoofs", "windowed", "wallMode", "wallTexture", "doorTexture", "wallTextureScale"]
     .every((k) => env.settings.has(`foundry-3d-view.${k}`));
   r.keybindingRegistered = !!game.keybindings.registry["foundry-3d-view.toggle"];
   const controlsV13 = { tokens: { name: "tokens", tools: {} } };
@@ -167,8 +167,11 @@ async function run() {
     r.noFogForGM = view.fogUniforms.f3dFogOn.value === 0;
     r.gmSeesHiddenAsGhost = view.tokens.get("ghost").group.visible && view.tokens.get("ghost").card.material.opacity < 1;
     // HUD toggles persist to client settings
+    // default is the cutaway; one click -> walls down, two more -> back to cutaway
+    r.cutawayIsDefault = view.cutMode === "cutaway";
     document.querySelector('[data-key="cutaway"]').click();
-    r.cutawaySettingSaved = game.settings.get("foundry-3d-view", "cutaway") === true;
+    r.cutawaySettingSaved = game.settings.get("foundry-3d-view", "cutMode") === "down";
+    document.querySelector('[data-key="cutaway"]').click();
     document.querySelector('[data-key="cutaway"]').click();
   }
   if (params.has("levels")) {

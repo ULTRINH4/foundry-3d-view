@@ -130,5 +130,9 @@
   "F3D.Settings.Portraits.Name": "Retratos acima dos tokens",
   "F3D.Settings.Portraits.Hint": "Retrato do token flutuando acima do sprite, no estilo Fire Emblem.",
   "F3D.TokenConfig.MoveRange": "Alcance de movimento (quadrados)",
-  "F3D.TokenConfig.AttackRange": "Alcance de ataque (quadrados)"
+  "F3D.TokenConfig.AttackRange": "Alcance de ataque (quadrados)",
+  "F3D.HUD.Walls": "Paredes",
+  "F3D.HUD.WallsMode.up": "Erguidas",
+  "F3D.HUD.WallsMode.cutaway": "Cortadas",
+  "F3D.HUD.WallsMode.down": "Baixas"
 }

@@ -4,7 +4,7 @@
  * so the repo carries no images. The page plays the Foundry side: it owns the documents, answers
  * the interaction callbacks and computes fog with the pure line-of-sight code.
  *
- * URL params: ?topdown=1  ?player=1  ?az=<deg>  ?paint=1  ?cutaway=1  ?select=<tokenId>  ?selftest=1
+ * URL params: ?topdown=1  ?player=1  ?az=<deg>  ?paint=1  ?cutaway=1 (The Sims cutaway)  ?cut=up|cutaway|down  ?select=<tokenId>  ?selftest=1
  *             ?walls=map|texture|flat  ?camera=tactics  ?sprites=camera|billboard|standee
  */
 import * as THREE from "../vendor/three/three.module.js";
@@ -177,7 +177,7 @@ const hud = createHud(overlay, {
   step: 2.5,
   unitLabel: "ft",
   levels: model.levels,
-  initial: { cutaway: params.has("cutaway"), showRoofs: true, cameraMode: params.get("camera") ?? "free", spriteFacing: params.get("sprites") ?? "camera" },
+  initial: { cutMode: params.get("cut") ?? (params.has("cutaway") ? "cutaway" : "up"), showRoofs: true, cameraMode: params.get("camera") ?? "free", spriteFacing: params.get("sprites") ?? "camera" },
   getWalls: () => model.walls.filter((w) => (w.levelIndex ?? 0) === 0),
   onHeightsChanged: (h) => (model.heights = h),
 });
@@ -326,15 +326,27 @@ async function runSelfTest() {
   hud.button("painting").click();
   hud.button("topDown").click();
 
-  // 5. cutaway lowers walls on the camera side only
+  // 5. walls: up -> cutaway (The Sims: front walls of each room) -> down -> up
   view.resetCamera();
   hud.button("cutaway").click();
   await frames(40);
   const cuts = [...view.walls.values()].map((w) => w.cut);
-  r.cutawayLowersSome = cuts.some((c) => c < 0.5) && cuts.some((c) => c > 0.99);
+  r.cutawayLowersSome = view.cutMode === "cutaway" && cuts.some((c) => c < 0.5) && cuts.some((c) => c > 0.99);
+  r.cutawayCapsDrawn = (view.capMesh?.count ?? 0) > 0;
+  const cutA = new Set([...view.walls].filter(([, w]) => w.cut < 0.5).map(([id]) => id));
+  view.rotateBy(180, { animate: false });
+  await frames(40);
+  const cutB = new Set([...view.walls].filter(([, w]) => w.cut < 0.5).map(([id]) => id));
+  // Turning around: walls that were in front are now at the back and come back up
+  r.cutawayFollowsCamera = cutB.size > 0 && [...cutA].some((id) => !cutB.has(id)) && [...cutB].some((id) => !cutA.has(id));
+  view.rotateBy(-180, { animate: false });
   hud.button("cutaway").click();
   await frames(40);
-  r.cutawayRestores = [...view.walls.values()].every((w) => w.cut > 0.95);
+  r.wallsDownAll = view.cutMode === "down" && [...view.walls.values()].every((w) => w.height * w.cut <= view.options.cutawayHeight + 0.02);
+  hud.button("cutaway").click();
+  await frames(40);
+  r.cutawayRestores = view.cutMode === "up" && [...view.walls.values()].every((w) => w.cut > 0.95);
+  r.capsGoneWhenUp = (view.capMesh?.count ?? 0) === 0;
 
   // 6. tiles and roofs: the roof over room C fades when a focus token stands under it
   r.tilesBuilt = view.tiles.size === 5;
