@@ -95,7 +95,7 @@
   "F3D.TokenConfig.Frames": "Quadros de animação (colunas)",
   "F3D.TokenConfig.Fps": "Quadros por segundo",
   "F3D.Settings.FoundryLighting.Name": "Usar a iluminação do Foundry no 3D",
-  "F3D.Settings.FoundryLighting.Hint": "No escuro, cada quadrado é iluminado pelas luzes reais da cena (luzes e tokens com luz, bloqueadas por paredes); quadrados sem luz ficam escuros, e jogadores veem em tons de cinza o que enxergam só pela visão (visão no escuro).",
+  "F3D.Settings.FoundryLighting.Hint": "Ilumina o 3D com a própria iluminação e visão renderizadas pelo Foundry (luzes animadas e coloridas, escuridão, visão no escuro, visão do token selecionado), lidas várias vezes por segundo enquanto o 3D está em tela cheia. No modo janela é usado um mapa de luz calculado a partir das fontes de luz.",
   "F3D.Settings.CombatFollow.Name": "Seguir os turnos do combate",
   "F3D.Settings.CombatFollow.Hint": "Durante o combate a câmera 3D vai até o combatente da vez (se você puder vê-lo), que também ganha um anel verde.",
   "F3D.Settings.MirrorAnimations.Name": "Mostrar animações de combate no 3D",

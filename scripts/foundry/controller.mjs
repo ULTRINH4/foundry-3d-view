@@ -16,6 +16,7 @@ import { View3D } from "../render/view3d.mjs";
 import { createHud } from "../ui/hud.mjs";
 import { createInteraction } from "../ui/interact.mjs";
 import { EffectsBridge } from "./effects-bridge.mjs";
+import { FoundryLightSampler } from "./light-sampler.mjs";
 
 const t = (key) => game.i18n.localize(key);
 
@@ -33,6 +34,8 @@ export class Tactics3DController {
     this._opening = null;
     this._explored = new Map(); // sceneId -> Uint8Array (fog memory for this session)
     this.effects = new EffectsBridge();
+    this.lightSampler = new FoundryLightSampler();
+    this._sampling = false; // true while lighting/vision come from Foundry's own rendering
     this._fogQueued = false;
   }
 
@@ -93,6 +96,7 @@ export class Tactics3DController {
     this._buildHud();
     this._buildInteraction();
     this._registerHooks();
+    this._startSampling();
     this._hudTimer = setInterval(() => {
       const hud = canvas.tokens?.hud ?? canvas.hud?.token;
       if (hud?.rendered && hud.object) this._positionTokenHUD(hud);
@@ -164,6 +168,9 @@ export class Tactics3DController {
     b.innerHTML = `<i class="fa-solid fa-window-restore"></i><span>${t("F3D.HUD.Windowed")}</span>`;
     b.addEventListener("click", () => {
       const on = !this.overlay.classList.contains("f3d-windowed");
+      // Full screen: frame the hidden 2D view on the scene for sampling; window: give it back.
+      if (on) this.lightSampler.restoreView();
+      else if (this._samplingWanted()) setTimeout(() => this.lightSampler.frameScene(), 0);
       this.overlay.classList.toggle("f3d-windowed", on);
       game.settings.set(MODULE_ID, "windowed", on);
     });
@@ -214,6 +221,10 @@ export class Tactics3DController {
     this._hooks = [];
     clearInterval(this._visTimer);
     clearInterval(this._hudTimer);
+    clearInterval(this._sampleTimer);
+    this._sampling = false;
+    this.lightSampler.restoreView();
+    this.lightSampler.destroy();
     this._flushHeights();
     this.effects.stop();
     if (this._patchedHUD) {
@@ -400,6 +411,8 @@ export class Tactics3DController {
       if (!this.isOpen) return;
       this._buildHud();
       this._buildInteraction();
+      this.lightSampler._savedView = null;
+      this._startSampling();
     });
 
     // Combat: follow the active combatant and mark it.
@@ -504,7 +517,9 @@ export class Tactics3DController {
     for (const doc of canvas.scene.tokens) {
       const placeable = canvas.tokens.get(doc.id);
       if (isGM) {
-        this.view.setTokenVisibility(doc.id, true, doc.hidden);
+        // A GM looking through a selected token sees what that token sees (like the 2D canvas).
+        const seen = !gmLooksThroughTokens() || (placeable ? (placeable.isVisible ?? placeable.visible) : false);
+        this.view.setTokenVisibility(doc.id, !!seen, doc.hidden);
         continue;
       }
       // v14 only creates placeables for the viewed level: no placeable means another level, which
@@ -527,8 +542,57 @@ export class Tactics3DController {
     }, 120);
   }
 
+  /**
+   * Fog applies when the scene uses token vision and the user is looking through tokens: always
+   * for players, and for the GM while a token with vision is selected (like the 2D canvas).
+   */
   _fogEnabled() {
-    return !game.user.isGM && !!canvas.scene?.tokenVision && game.settings.get(MODULE_ID, "fog3d");
+    if (!canvas.scene?.tokenVision || !game.settings.get(MODULE_ID, "fog3d")) return false;
+    return !game.user.isGM || gmLooksThroughTokens();
+  }
+
+  _samplingWanted() {
+    return FoundryLightSampler.supported() && game.settings.get(MODULE_ID, "foundryLighting");
+  }
+
+  /** Start reading Foundry's rendered lighting and vision (when the 3D view covers the screen). */
+  _startSampling() {
+    clearInterval(this._sampleTimer);
+    if (!this._samplingWanted()) return;
+    if (!this.overlay.classList.contains("f3d-windowed")) this.lightSampler.frameScene();
+    this._sampleTimer = setInterval(() => this._sampleFoundry(), 150);
+  }
+
+  _sampleFoundry() {
+    if (!this.view?.grid || !canvas.ready) return;
+    const windowed = this.overlay?.classList.contains("f3d-windowed");
+    let s = null;
+    if (!windowed && this.lightSampler.sceneOnScreen()) {
+      try {
+        s = this.lightSampler.sample(this.view.grid.cols, this.view.grid.rows);
+      } catch (e) {
+        console.warn("foundry-3d-view | lighting sample failed, using computed lighting", e);
+      }
+    }
+    if (!s) {
+      if (this._sampling) {
+        this._sampling = false;
+        this._updateFog(); // back to the computed fallback
+      }
+      return;
+    }
+    this._sampling = true;
+    const g = this.view.grid;
+    if (this._fogEnabled()) {
+      const visible = FoundryLightSampler.visibleCells(s, g.cols, g.rows);
+      const id = canvas.scene.id;
+      const fog = fogStates(this._explored.get(id) ?? null, visible);
+      this._explored.set(id, fog.explored);
+      this.view.setFog(fog.states);
+    } else {
+      this.view.setFog(null);
+    }
+    this.view.setSampledLighting(s);
   }
 
   /**
@@ -538,6 +602,7 @@ export class Tactics3DController {
    */
   _updateFog() {
     if (!this.view?.grid) return;
+    if (this._sampling) return; // lighting and vision come from Foundry's rendering
     if (!this._fogEnabled()) {
       this.view.setFog(null);
       this._updateLighting(null);
@@ -639,6 +704,16 @@ function wallStyle() {
     invisibleWalls: game.settings.get(MODULE_ID, "invisibleWalls"),
     useLevelHeight: game.settings.get(MODULE_ID, "useLevelHeight"),
   };
+}
+
+/**
+ * Is the GM currently seeing through tokens? canvas.visibility.tokenVision only mirrors the scene
+ * setting; what matters is whether any vision source is active (a selected token with vision).
+ */
+function gmLooksThroughTokens() {
+  if (!canvas.scene?.tokenVision || !canvas.visibility?.tokenVision) return false;
+  for (const src of canvas.effects?.visionSources?.values?.() ?? []) if (src?.active) return true;
+  return false;
 }
 
 function isSupportedGrid(scene) {

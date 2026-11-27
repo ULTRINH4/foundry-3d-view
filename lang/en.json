@@ -95,7 +95,7 @@
   "F3D.TokenConfig.Frames": "Animation frames (columns)",
   "F3D.TokenConfig.Fps": "Frames per second",
   "F3D.Settings.FoundryLighting.Name": "Use Foundry lighting in 3D",
-  "F3D.Settings.FoundryLighting.Hint": "In darkness, each square is lit by the scene's real light sources (lights and token lights, blocked by walls); unlit squares are dark, and players see squares lit only by their vision (darkvision) in greys.",
+  "F3D.Settings.FoundryLighting.Hint": "Shade the 3D view with Foundry's own rendered lighting and vision (animated and coloured lights, darkness, darkvision, the selected token's vision), sampled several times a second while the 3D view is full screen. In window mode a light map computed from the light sources is used instead.",
   "F3D.Settings.CombatFollow.Name": "Follow combat turns",
   "F3D.Settings.CombatFollow.Hint": "During combat the 3D camera pans to the combatant whose turn it is (if you can see it), which is also marked with a green ring.",
   "F3D.Settings.MirrorAnimations.Name": "Show combat animations in 3D",

@@ -110,6 +110,11 @@ async function joinAs(page, userName) {
   await page.waitForFunction(() => globalThis.game?.ready === true && canvas?.ready, null, { timeout: 120000 });
   await sleep(1500);
   await closePopups(page);
+  // Some systems open welcome dialogs (v1 Dialogs) late; keep closing them during the test.
+  // The module's own dialogs are ApplicationV2 and are not in ui.windows, so they are untouched.
+  await page.evaluate(() => setInterval(() => {
+    for (const w of Object.values(ui.windows ?? {})) if (w?.element?.[0]?.getAttribute?.("role") === "dialog" || w?.constructor?.name?.includes("Dialog")) w.close?.();
+  }, 500));
 }
 
 /** Close system welcome dialogs and similar popups (v1 windows) so they don't cover the board. */
@@ -438,7 +443,71 @@ await gm.evaluate(() => canvas.scene.update({ environment: { darknessLevel: 0.8 
 await sleep(3500);
 const dark = await gm.evaluate(() => game.modules.get("foundry-3d-view").api._controller.view.darkness);
 check("darkness change reaches the 3D lights", dark > 0.6, `darkness ${dark}`);
-await gm.evaluate(() => canvas.scene.update({ environment: { darknessLevel: 0.3 } }));
+
+// Foundry's rendered lighting and the selected token's vision in 3D (GM)
+await gm.evaluate(async () => {
+  await canvas.scene.update({ environment: { darknessLevel: 0.85, globalLight: { enabled: false } } });
+  canvas.tokens.releaseAll();
+});
+await sleep(3000);
+const cellLight = (c, r) => gm.evaluate(({ c, r }) => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  const s = v.lightSample;
+  if (!s) return null;
+  const x = Math.floor((c + 0.5) * s.k), y = Math.floor((r + 0.5) * s.k);
+  const i = (y * s.w + x) * 4;
+  return { illum: (s.illum[i] + s.illum[i + 1] + s.illum[i + 2]) / 3, color: s.color[i] + s.color[i + 1] + s.color[i + 2] };
+}, { c, r });
+const lit0 = await gm.evaluate(() => {
+  const c = game.modules.get("foundry-3d-view").api._controller;
+  return { source: c.view.lightSource, sampling: c._sampling, fog: c.view.fogUniforms.f3dFogOn.value };
+});
+check("lighting comes from Foundry's own rendering", lit0.source === "foundry" && lit0.sampling, JSON.stringify(lit0));
+const heroRoom = await cellLight(5, 5), rock = await cellLight(23, 15), dais = await cellLight(19, 4);
+check("room lit by the hero's torch is bright, far rock is dark", heroRoom?.illum > 180 && rock?.illum < 140, JSON.stringify({ heroRoom, rock }));
+check("coloured light (torch) reaches the 3D colour map", heroRoom?.color > 10, JSON.stringify(heroRoom));
+check("GM without a selected token sees every light (no fog)", lit0.fog === 0 && dais?.illum > 180, JSON.stringify({ dais, fog: lit0.fog }));
+// Adaptive: turning the brazier off darkens the dais in 3D
+const brazierId = await gm.evaluate(() => canvas.scene.lights.find((l) => l.config.dim === 40 && l.config.bright === 20)?.id);
+await gm.evaluate((id) => canvas.scene.lights.get(id).update({ hidden: true }), brazierId);
+await sleep(2500);
+const daisOff = await cellLight(19, 4);
+check("light turned off in Foundry darkens the 3D view", daisOff?.illum < dais.illum - 40, JSON.stringify({ before: dais?.illum, after: daisOff?.illum }));
+await gm.evaluate((id) => canvas.scene.lights.get(id).update({ hidden: false }), brazierId);
+// Token vision: the GM selects the hero -> 3D shows only what the hero sees
+await gm.evaluate((id) => canvas.tokens.get(id).control({ releaseOthers: true }), ids.tokens.hero);
+await sleep(3000);
+const tv = await gm.evaluate((ids) => {
+  const c = game.modules.get("foundry-3d-view").api._controller;
+  const v = c.view;
+  const g = v.grid;
+  return {
+    tokenVision: canvas.visibility.tokenVision,
+    fog: v.fogUniforms.f3dFogOn.value,
+    heroRoom: v.fogStates?.[5 * g.cols + 5],
+    roomB: v.fogStates?.[10 * g.cols + 19],
+    goblin: v.tokens.get(ids.tokens.goblin).group.visible,
+    hero: v.tokens.get(ids.tokens.hero).group.visible,
+  };
+}, ids);
+check("GM selecting a token: 3D fog follows that token's vision", tv.tokenVision && tv.fog === 1 && tv.heroRoom === 2 && tv.roomB !== 2, JSON.stringify(tv));
+check("GM selecting a token: tokens it can't see are hidden in 3D", tv.hero && !tv.goblin, JSON.stringify(tv));
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-gm-token-vision.png`) });
+await gm.evaluate(() => canvas.tokens.releaseAll());
+await sleep(2500);
+const tv2 = await gm.evaluate((ids) => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  return { fog: v.fogUniforms.f3dFogOn.value, goblin: v.tokens.get(ids.tokens.goblin).group.visible };
+}, ids);
+check("releasing the token gives the GM the full view back", tv2.fog === 0 && tv2.goblin, JSON.stringify(tv2));
+await gm.evaluate(() => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  v.setTopDown(false);
+  v.resetCamera();
+});
+await sleep(1500);
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-foundry-lighting.png`) });
+await gm.evaluate(() => canvas.scene.update({ environment: { darknessLevel: 0.3, globalLight: { enabled: true } } }));
 
 // Wall look: default inherits the map; module settings switch to textures; the Wall config sheet
 // gets a "3D texture" field whose value overrides one wall.
@@ -569,16 +638,17 @@ const models = await gm.evaluate(async (files) => {
     { x: dim.sceneX + 1000, y: dim.sceneY + 100, width: 100, height: 100, flags: { "foundry-3d-view": { model: "tree" } } },
     { x: dim.sceneX + 1200, y: dim.sceneY + 100, width: 100, height: 100, flags: { "foundry-3d-view": { modelFile: files.find((f) => f.endsWith("crate.glb")) } } },
   ]);
-  await new Promise((ok) => setTimeout(ok, 2500));
   const v = game.modules.get("foundry-3d-view").api._controller.view;
+  // Custom models load asynchronously: wait for them (up to ~10 s on a slow headless machine).
+  for (let i = 0; i < 40 && !v.tiles.get(custom.id)?.mesh; i++) await new Promise((ok) => setTimeout(ok, 250));
   const a = v.tiles.get(builtin.id), b = v.tiles.get(custom.id);
   const meshes = (e) => { let n = 0; e?.mesh?.traverse((o) => o.isMesh && n++); return n; };
-  const out = { builtin: !!a?.isModel && meshes(a) > 0, custom: !!b?.isModel && meshes(b) > 0 };
+  const out = { builtin: !!a?.isModel && meshes(a) > 0, custom: !!b?.isModel && meshes(b) > 0, file: custom.getFlag("foundry-3d-view", "modelFile"), customEntry: !!b, customMesh: !!b?.mesh };
   await canvas.scene.deleteEmbeddedDocuments("Tile", [builtin.id, custom.id]);
   return out;
 }, exported ?? []);
 check("tile with a built-in 3D model rendered", models.builtin);
-check("tile with an exported .glb (custom model) loaded and rendered", models.custom);
+check("tile with an exported .glb (custom model) loaded and rendered", models.custom, JSON.stringify(models));
 
 check("GM sees the hidden token as a ghost", await gm.evaluate((id) => {
   const t = game.modules.get("foundry-3d-view").api._controller.view.tokens.get(id);

@@ -65,6 +65,7 @@ const FOG_VALUE = { [FOG.UNSEEN]: 0, [FOG.EXPLORED]: 110, [FOG.VISIBLE]: 255 };
 const FOG_VERTEX_PARS = "varying vec3 vF3dWorld;\nvarying vec3 vF3dNormal;\n";
 const FOG_FRAGMENT_PARS = `
 uniform sampler2D f3dLightMap;
+uniform sampler2D f3dColorMap;
 uniform float f3dLightOn;
 uniform float f3dUnlit;
 uniform sampler2D f3dFogMap;
@@ -96,18 +97,21 @@ float f3dFogCellDilated() {
   return max(f3dFogAt(c), max(max(f3dFogAt(c + vec2(1.0, 0.0)), f3dFogAt(c - vec2(1.0, 0.0))),
                               max(f3dFogAt(c + vec2(0.0, 1.0)), f3dFogAt(c - vec2(0.0, 1.0)))));
 }
-// Foundry lighting: r = light level (0 dark, .5 dim, 1 bright), g = seen in darkness (darkvision).
+// Foundry lighting. Light map: rgb = light factor (multiplied, like Foundry's illumination layer),
+// a = seen only by vision (darkvision greys). Colour map: coloured light added with a screen blend.
 vec3 f3dApplyLight(vec3 c) {
   if (f3dLightOn < 0.5) return c;
   vec2 uv = f3dFogUV();
-  vec2 lv = (uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0) ? vec2(0.0) : texture2D(f3dLightMap, uv).rg;
-  vec3 lit = c * mix(f3dUnlit, 1.0, clamp(lv.r * 1.15, 0.0, 1.0));
-  if (lv.g > 0.5) {
+  bool outside = uv.x < 0.0 || uv.y < 0.0 || uv.x > 1.0 || uv.y > 1.0;
+  vec4 lv = outside ? vec4(vec3(f3dUnlit), 0.0) : texture2D(f3dLightMap, uv);
+  vec3 colr = outside ? vec3(0.0) : texture2D(f3dColorMap, uv).rgb;
+  vec3 lit = c * lv.rgb;
+  if (lv.a > 0.5) {
     // Darkvision: visible without light shows in greys, like Foundry's vision modes.
     float lum = dot(c, vec3(0.299, 0.587, 0.114));
-    lit = mix(vec3(lum) * 0.62, lit, smoothstep(0.15, 0.6, lv.r));
+    lit = mix(vec3(lum) * 0.62, lit, smoothstep(0.15, 0.6, dot(lv.rgb, vec3(0.3333))));
   }
-  return lit;
+  return 1.0 - (1.0 - lit) * (1.0 - colr);
 }
 vec3 f3dApplyFog(vec3 c) {
   if (f3dFogOn < 0.5) return c;
@@ -228,6 +232,7 @@ export class View3D {
     // Fog of war: one texel per grid square, shared by every fog-aware material.
     this.fogUniforms = {
       f3dLightMap: { value: null },
+      f3dColorMap: { value: null },
       f3dLightOn: { value: 0 },
       f3dUnlit: { value: 1 },
       f3dFogMap: { value: null },
@@ -338,12 +343,7 @@ export class View3D {
     fogTex.needsUpdate = true;
     this.fogUniforms.f3dFogMap.value?.dispose();
     this.fogUniforms.f3dFogMap.value = fogTex;
-    const lightTex = new THREE.DataTexture(new Uint8Array(g.cols * g.rows * 2), g.cols, g.rows, THREE.RGFormat, THREE.UnsignedByteType);
-    lightTex.magFilter = THREE.LinearFilter;
-    lightTex.minFilter = THREE.LinearFilter;
-    lightTex.needsUpdate = true;
-    this.fogUniforms.f3dLightMap.value?.dispose();
-    this.fogUniforms.f3dLightMap.value = lightTex;
+    this._ensureLightTextures(g.cols, g.rows);
     this.fogUniforms.f3dLightOn.value = 0;
     this.lightMapOn = false;
     const min = canvasToWorld(g, g.sceneX, g.sceneY);
@@ -1204,28 +1204,86 @@ export class View3D {
     this.fogUniforms.f3dUnlit.value = unlitBrightness(this.darkness);
   }
 
+  /** (Re)create the RGBA light and colour textures at w × h samples over the scene. */
+  _ensureLightTextures(w, h) {
+    const cur = this.fogUniforms.f3dLightMap.value;
+    if (cur && cur.image.width === w && cur.image.height === h) return;
+    const make = () => {
+      const t = new THREE.DataTexture(new Uint8Array(w * h * 4), w, h, THREE.RGBAFormat, THREE.UnsignedByteType);
+      t.magFilter = THREE.LinearFilter;
+      t.minFilter = THREE.LinearFilter;
+      t.needsUpdate = true;
+      return t;
+    };
+    this.fogUniforms.f3dLightMap.value?.dispose();
+    this.fogUniforms.f3dColorMap.value?.dispose();
+    this.fogUniforms.f3dLightMap.value = make();
+    this.fogUniforms.f3dColorMap.value = make();
+  }
+
+  _lightOff() {
+    this.lightMapOn = false;
+    this.lightSource = null;
+    this.fogUniforms.f3dLightOn.value = 0;
+    this._applyAmbient();
+  }
+
   /**
-   * Per-square lighting from Foundry's light sources.
+   * Per-square lighting computed from light sources (fallback when Foundry's rendered lighting
+   * can't be sampled).
    * @param {Uint8Array|null} levels  lightLevels() result (cols*rows), or null to turn it off
    * @param {{vision?:Uint8Array|null}} [o]  squares seen without light (darkvision): 1 = yes
    */
   setLightMap(levels, { vision = null } = {}) {
-    const tex = this.fogUniforms.f3dLightMap.value;
-    if (!levels || !tex) {
-      this.lightMapOn = false;
-      this.fogUniforms.f3dLightOn.value = 0;
-      this._applyAmbient();
-      return;
-    }
-    const data = tex.image.data;
-    const n = Math.min(levels.length, data.length / 2);
+    if (!levels || !this.grid) return this._lightOff();
+    const g = this.grid;
+    this._ensureLightTextures(g.cols, g.rows);
+    const unlit = unlitBrightness(this.darkness);
+    const L = this.fogUniforms.f3dLightMap.value.image.data;
+    const C = this.fogUniforms.f3dColorMap.value.image.data;
+    const n = Math.min(levels.length, g.cols * g.rows);
     for (let i = 0; i < n; i++) {
-      data[i * 2] = levels[i];
-      data[i * 2 + 1] = vision && vision[i] && levels[i] < 64 ? 255 : 0;
+      const f = Math.round((unlit + (1 - unlit) * Math.min(1, (levels[i] / 255) * 1.15)) * 255);
+      L[i * 4] = L[i * 4 + 1] = L[i * 4 + 2] = f;
+      L[i * 4 + 3] = vision && vision[i] && levels[i] < 64 ? 255 : 0;
+      C[i * 4] = C[i * 4 + 1] = C[i * 4 + 2] = C[i * 4 + 3] = 0;
     }
-    tex.needsUpdate = true;
+    this.fogUniforms.f3dLightMap.value.needsUpdate = true;
+    this.fogUniforms.f3dColorMap.value.needsUpdate = true;
     this.lightLevels = levels;
     this.lightMapOn = true;
+    this.lightSource = "computed";
+    this.fogUniforms.f3dLightOn.value = 1;
+    this._applyAmbient();
+  }
+
+  /**
+   * Lighting sampled from Foundry's own rendering (exactly what the 2D canvas shows).
+   * @param {{w:number,h:number,illum:Uint8Array,color:Uint8Array}|null} s  RGBA samples over the scene
+   */
+  setSampledLighting(s) {
+    if (!s || !this.grid) return this._lightOff();
+    this._ensureLightTextures(s.w, s.h);
+    const L = this.fogUniforms.f3dLightMap.value.image.data;
+    const C = this.fogUniforms.f3dColorMap.value.image.data;
+    const n = s.w * s.h;
+    for (let i = 0; i < n; i++) {
+      L[i * 4] = s.illum[i * 4];
+      L[i * 4 + 1] = s.illum[i * 4 + 1];
+      L[i * 4 + 2] = s.illum[i * 4 + 2];
+      // Seen through vision but barely lit (darkvision): greys.
+      const lum = (s.illum[i * 4] + s.illum[i * 4 + 1] + s.illum[i * 4 + 2]) / 3;
+      L[i * 4 + 3] = s.vision?.[i] && lum < 90 ? 255 : 0;
+      C[i * 4] = s.color[i * 4];
+      C[i * 4 + 1] = s.color[i * 4 + 1];
+      C[i * 4 + 2] = s.color[i * 4 + 2];
+      C[i * 4 + 3] = 255;
+    }
+    this.fogUniforms.f3dLightMap.value.needsUpdate = true;
+    this.fogUniforms.f3dColorMap.value.needsUpdate = true;
+    this.lightSample = s;
+    this.lightMapOn = true;
+    this.lightSource = "foundry";
     this.fogUniforms.f3dLightOn.value = 1;
     this._applyAmbient();
   }
@@ -1788,6 +1846,7 @@ export class View3D {
     this.bgTexture?.dispose();
     this.fogUniforms.f3dFogMap.value?.dispose();
     this.fogUniforms.f3dLightMap.value?.dispose();
+    this.fogUniforms.f3dColorMap.value?.dispose();
     this.rulerLabel.remove();
     this.renderer.dispose();
     this.renderer.domElement.remove();
