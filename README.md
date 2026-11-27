@@ -57,46 +57,73 @@ ln -s /path/to/this/repo ~/Library/Application\ Support/FoundryVTT/Data/modules/
 You can also copy the folder there instead. Only `module.json`, `scripts/`, `styles/`, `lang/` and `vendor/` are needed at runtime.
 Then restart Foundry, enable **Foundry 3D View** in *Manage Modules*, open a scene, and click the cube button in the Token controls.
 
-## How it was tested (no real Foundry yet)
+## How it was tested
 
-Foundry is not installed on the development machine, so the module has **not been run inside a real Foundry yet**. Instead there are four layers of checks:
+**Real Foundry v13 (build 351): `npm run e2e`, 43 end-to-end checks, all passing.**
+The script `tools/foundry-e2e.mjs` drives a real Foundry server through headless Edge (playwright-core), using real mouse and keyboard input. It runs in a throwaway data folder, never in your own worlds. It:
+- creates a world;
+- enables the module (and the system's required modules);
+- builds the sample dungeon as a real scene: walls, doors, actors and tokens, lights, tiles and heights;
+- tests the 3D view as the GM;
+- tests it again as a player, in a second browser session at the same time.
 
-1. **Unit tests** (`npm test`, 67 tests, vitest). They cover the pure logic:
-   - coordinates, walls and doors;
-   - heights, the auto pass, brush and undo;
-   - terrain mesh winding and UVs;
-   - line of sight and fog states;
-   - cutaway, lights, tiles, levels and measurement;
-   - the scene model.
-2. **Dev page** (`dev/index.html`). The same renderer, toolbar and interaction code, running on a generated sample dungeon. That dungeon has an open door, a closed door, a secret door, a dais with a stair, a pillar, a balcony on a second level, a rug tile, a roof, three lights, darkness and six tokens. The page itself plays the Foundry side.
-3. **Mock Foundry harness** (`dev/foundry-mock.html`). The real `scripts/main.mjs` and controller run against fake `Hooks`, `game`, `canvas`, `ui` and documents that fire hooks on update. It runs as GM, as a player (`?gm=0`), and with v14-style levels (`?levels=1`). It checks:
-   - scene control registration (both the v13 object and the older array shapes) and the keybinding;
-   - opening and closing the view, and unhooking on close;
-   - document updates for walls, tokens, tiles, lights and darkness;
-   - height flags round-trip;
-   - selecting and moving tokens from 3D, with wall blocking for players;
-   - doors, including locked doors;
-   - fog and token visibility for players;
-   - reloading on `canvasReady`, including closing in the middle of a reload.
-4. **Headless browser self-tests** (`npm run selftest`, 119 checks over 5 pages). The pages above run in headless Edge or Chrome with real WebGL (SwiftShader), and every interaction is a synthetic pointer click on the rendered 3D view. The last page is a performance check on a 120×120 map with 2400 walls and 150 tokens: it loads in about 0.6 s, renders a frame in about 9 ms even on the CPU rasterizer, updates fog in about 50 ms, and edits heights in about 30 ms.
+What it covers:
+- **Toolbar and overlay:**
+  - the cube button in the v13 scene controls;
+  - the overlay placement, with the sidebar and scene controls still clickable;
+  - the scene loading into 3D.
+- **Live sync from Foundry:**
+  - `updateWall` door swings;
+  - `updateToken` and the `refreshToken` animation;
+  - darkness changes.
+- **Real mouse clicks in 3D:**
+  - clicking a standee to control the token;
+  - clicking a square to move it;
+  - the hover ruler (Foundry measurement);
+  - right-click to release;
+  - clicking a door to open it.
+- **GM tools:** height paint saved to the scene flag, plus undo; cutaway, saved as a client setting.
+- **As a player:**
+  - the Shift+V keybinding;
+  - fog of war;
+  - Foundry's `isVisible` for enemies and hidden tokens;
+  - the secret door shown as a wall;
+  - no GM tools;
+  - actions refused while the game is paused;
+  - moves through walls refused, while free moves work;
+  - opening a door, which reveals the next room in the fog;
+  - a locked door staying locked;
+  - the GM closing a door and the player's 3D door following.
+- No console errors from the module.
 
-The self-tests found and fixed several real bugs:
-- an infinite loop when heights changed;
-- picking blocked by transparent upper floors;
-- a shader compile error;
-- a crash when the view was closed during a scene reload.
+Running it against real Foundry found bugs that the mock could not:
+- **Toggle fired twice.** In v13 the cube button opened and immediately closed the view, because v13 calls both `onChange` and the legacy `onClick`.
+- **Toolbar hidden by notifications.** Foundry's notifications (top centre) covered the toolbar, so it moved to the bottom centre.
+- **Content visible while loading.** For a player, tokens and the map were visible for a moment while the scene loaded. Players now start fully fogged and hidden until the first visibility update.
+- **Light grey sky.** The default scene colour made the 3D sky light grey; it is darkened now.
+- It also confirmed real behaviour that the module already handled. Foundry chooses its own padding (`sceneX` was 300, not 200), and the module uses `canvas.dimensions`. In v13, `token.x` changes during the movement animation.
 
-### First things to check in a real Foundry
+How to run it yourself (Windows, portable Foundry):
 
-These were all written against the v13 public API and checked only against the mock:
+```powershell
+# a separate data folder: Config/license.json (copy of yours), Config/options.json,
+# Data/systems/<system>, Data/modules/foundry-3d-view -> this repo (junction)
+node "<Foundry>\Appesourcespp\main.mjs" --dataPath="<testdata>" --port=30013 --noupnp --noupdate
+$env:FOUNDRY_URL="http://localhost:30013"; $env:FOUNDRY_SYSTEM="ordemparanormal"; npm run e2e
+```
 
-- The overlay is inserted right after `#board`, so Foundry's UI stays on top. Check that the sidebar and scene controls are still clickable while the view is open.
-- The cube button under Token controls: `getSceneControlButtons` uses the v13 object API, with an array fallback.
-- Token positions during movement: `refreshToken` reads the placeable's `x/y`.
-- `canvas.visibility.testVisibility` for fog, and `canvas.environment.darknessLevel` for darkness.
-- `Token#checkCollision(dest, {type: "move", mode: "any"})` for wall blocking. If it throws, the move is allowed and a warning is logged.
-- Moves use `TokenDocument#update({x, y})`. If you want v13's movement API (`move`) and its waypoints instead, that's a small change.
-- **v14:** the background lookup, and the level fields `scene.levels`, `level.elevation.bottom`, `level.background`, `doc.level` / `doc.levels`.
+Foundry v13 needs Node 20 to 22 (Node 24 is refused). A portable Node 22 works.
+
+Other layers:
+1. **Unit tests** (`npm test`, 67, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
+2. **Dev page** (`dev/index.html`). The renderer, toolbar and interaction on a generated sample dungeon, with no Foundry needed.
+3. **Mock Foundry harness** (`dev/foundry-mock.html`). The real module runs against fake Foundry globals, as GM, as a player, and with v14-style levels.
+4. **Headless self-tests** (`npm run selftest`, 122 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
+
+### Still unverified
+- **Foundry v14.** I have only checked levels against the mock. There is a v14 installer in the owner's Downloads, but it was not installed.
+- **Real GPUs and other systems.** All browser runs used SwiftShader, and only the Ordem Paranormal system was tested.
+- **Saved fog exploration** from Foundry is not read; explored squares last for the session only.
 
 ## Development
 
@@ -104,6 +131,7 @@ These were all written against the v13 public API and checked only against the m
 npm install          # three + vitest (dev only)
 npm test             # unit tests
 npm run selftest     # headless browser checks: dev page, mock Foundry (GM, player, levels), performance
+npm run e2e          # end-to-end against a running real Foundry server (see above)
 npm run screenshot   # renders dev/screenshots/*.png
 npm run dev          # static server → http://localhost:8173/dev/  (and /dev/foundry-mock.html, /dev/perf.html)
 npm run vendor       # re-copy three.js from node_modules into vendor/three
@@ -126,6 +154,11 @@ Screenshots (`dev/screenshots/`):
 | `dev-page-paint.png` | Height paint mode |
 | `foundry-mock-gm.png` | The real module in the mock Foundry, as GM |
 | `foundry-mock-player.png` | The real module in the mock Foundry, as a player |
+| `foundry-real-gm.png` | **Real Foundry v13**: the GM with the 3D view open |
+| `foundry-real-ruler.png` | Real Foundry: a selected token and the hover ruler |
+| `foundry-real-cutaway.png` | Real Foundry: cutaway walls |
+| `foundry-real-player.png` | Real Foundry: the player view with fog |
+| `foundry-real-player-door.png` | Real Foundry: the player after opening the door from 3D |
 
 ### Layout
 

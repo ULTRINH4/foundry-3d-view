@@ -66,7 +66,8 @@ async function run() {
   r.sceneControlToolV13 = !!tool && typeof tool.onChange === "function";
   const controlsV12 = [{ name: "token", tools: [] }];
   Hooks.callAll("getSceneControlButtons", controlsV12);
-  r.sceneControlToolArray = controlsV12[0].tools.some((x) => x.name === "f3dToggle");
+  r.sceneControlToolArray = controlsV12[0].tools.some((x) => x.name === "f3dToggle" && typeof x.onClick === "function");
+  r.v13ToolHasNoLegacyOnClick = tool.onClick === undefined; // v13 would call both and toggle twice
 
   // Open via the scene control button
   tool.onChange();

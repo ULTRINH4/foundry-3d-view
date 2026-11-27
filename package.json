@@ -1,7 +1,7 @@
 {
   "name": "foundry-3d-view",
   "private": true,
-  "version": "0.2.0",
+  "version": "0.2.1",
   "type": "module",
   "description": "Foundry VTT module: tactics-style 3D view of the current scene",
   "scripts": {
@@ -9,10 +9,12 @@
     "vendor": "node tools/vendor-three.mjs",
     "dev": "node tools/serve.mjs",
     "screenshot": "node tools/screenshot.mjs",
-    "selftest": "node tools/selftest.mjs"
+    "selftest": "node tools/selftest.mjs",
+    "e2e": "node tools/foundry-e2e.mjs"
   },
   "license": "MIT",
   "devDependencies": {
+    "playwright-core": "^1.65.1",
     "three": "^0.187.0",
     "vitest": "^5.1.2"
   }

@@ -26,6 +26,9 @@ const DEFAULTS = {
   showRoofs: true,
   cutawayHeight: 0.22, // world units walls are lowered to
   maxLights: 8,
+  // Players: start with everything fogged and tokens hidden until the first visibility update,
+  // so nothing leaks while the scene loads.
+  startHidden: false,
   pixelRatio: Math.min(globalThis.devicePixelRatio ?? 1, 2),
 };
 
@@ -228,11 +231,12 @@ export class View3D {
     this.model = model;
     this.grid = model.grid.cols !== undefined ? model.grid : makeGrid(model.grid);
     this.heights = normalizeHeightMap(model.heights, this.grid.cols, this.grid.rows);
-    this.scene.background = new THREE.Color(model.backgroundColor ?? "#1b1b1f");
+    // Foundry's default scene colour is a light grey: darken it so the 3D "sky" stays unobtrusive.
+    this.scene.background = new THREE.Color(model.backgroundColor ?? "#1b1b1f").multiplyScalar(0.08);
     const g = this.grid;
 
     // Fog texture sized to the grid.
-    const fogData = new Uint8Array(g.cols * g.rows).fill(255);
+    const fogData = new Uint8Array(g.cols * g.rows).fill(this.options.startHidden ? 0 : 255);
     const fogTex = new THREE.DataTexture(fogData, g.cols, g.rows, THREE.RedFormat, THREE.UnsignedByteType);
     fogTex.magFilter = THREE.LinearFilter;
     fogTex.minFilter = THREE.LinearFilter;
@@ -242,6 +246,7 @@ export class View3D {
     const min = canvasToWorld(g, g.sceneX, g.sceneY);
     this.fogUniforms.f3dFogMin.value.set(min.x, min.z);
     this.fogUniforms.f3dFogSize.value.set(g.cols, g.rows);
+    this.fogUniforms.f3dFogOn.value = this.options.startHidden ? 1 : 0;
 
     // Padding ground (outside the scene rect), slightly below 0 to avoid z-fighting.
     const pad = new THREE.Mesh(
@@ -596,7 +601,7 @@ export class View3D {
     this.tokenGroup.add(group);
     return {
       data: t, group, yaw, pivot, card, base, ring, target: new THREE.Vector3(),
-      allowed: true, levelHidden: false, textureApplied: false,
+      allowed: !this.options.startHidden, levelHidden: false, textureApplied: false,
     };
   }
 

@@ -2,7 +2,7 @@
   "id": "foundry-3d-view",
   "title": "Foundry 3D View",
   "description": "Shows the current scene in 3D, tactics-RPG style: the map as terrain with per-square heights, walls and live doors, and tokens as paper standees.",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "authors": [{ "name": "ULTRINH4" }],
   "compatibility": {
     "minimum": "13",

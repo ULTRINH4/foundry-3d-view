@@ -31,9 +31,10 @@
   cursor: crosshair;
 }
 
+/* Bottom centre, above the hotbar: Foundry's notifications live at the top centre. */
 .f3d-hud {
   position: absolute;
-  top: 56px;
+  bottom: 96px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -48,6 +49,7 @@
 }
 #f3d-overlay.f3d-windowed .f3d-hud {
   top: 6px;
+  bottom: auto;
 }
 .f3d-group {
   display: flex;

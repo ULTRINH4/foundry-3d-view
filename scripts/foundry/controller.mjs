@@ -38,6 +38,10 @@ export class Tactics3DController {
   }
 
   toggle() {
+    // Guard against two triggers for one user action (e.g. a button firing two callbacks).
+    const now = Date.now();
+    if (now - (this._lastToggle ?? 0) < 250) return;
+    this._lastToggle = now;
     return this.isOpen ? this.close() : this.open();
   }
 
@@ -75,6 +79,7 @@ export class Tactics3DController {
       showGrid: game.settings.get(MODULE_ID, "showGrid"),
       cutaway: game.settings.get(MODULE_ID, "cutaway"),
       showRoofs: game.settings.get(MODULE_ID, "showRoofs"),
+      startHidden: !game.user.isGM,
     });
     await this._loadScene();
     if (this.overlay !== overlay) return; // closed while loading

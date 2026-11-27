@@ -87,12 +87,13 @@ Hooks.on("getSceneControlButtons", (controls) => {
     order: 100,
     button: true,
     visible: true,
+    // v13 calls onChange (and, for compatibility, a legacy onClick too): only define onChange there.
     onChange: () => controller.toggle(),
-    onClick: () => controller.toggle(),
   };
   if (Array.isArray(controls)) {
+    // Older array-based API (v12 and earlier) used onClick for button tools.
     const tokens = controls.find((c) => c.name === "token" || c.name === "tokens");
-    tokens?.tools.push(tool);
+    tokens?.tools.push({ ...tool, onChange: undefined, onClick: () => controller.toggle() });
   } else {
     const tokens = controls.tokens ?? controls.token;
     if (tokens?.tools) tokens.tools[TOOL] = tool;
