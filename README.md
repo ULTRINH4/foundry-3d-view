@@ -108,7 +108,7 @@ How to run it yourself (Windows, portable Foundry):
 ```powershell
 # a separate data folder: Config/license.json (copy of yours), Config/options.json,
 # Data/systems/<system>, Data/modules/foundry-3d-view -> this repo (junction)
-node "<Foundry>\Appesourcespp\main.mjs" --dataPath="<testdata>" --port=30013 --noupnp --noupdate
+node "<Foundry>/App/resources/app/main.mjs" --dataPath="<testdata>" --port=30013 --noupnp --noupdate
 $env:FOUNDRY_URL="http://localhost:30013"; $env:FOUNDRY_SYSTEM="ordemparanormal"; npm run e2e
 ```
 
