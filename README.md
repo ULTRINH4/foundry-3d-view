@@ -6,7 +6,7 @@ on the map as paper standees. Players see the scene through fog of war. You can 
 tokens and open doors directly in 3D. The 2D scene stays as it is: the 3D view is an overlay you
 toggle on and off.
 
-- **Foundry:** v13 (primary), v14 (best effort, see below). Square or gridless scenes. Works with any system.
+- **Foundry:** v13 and v14, both tested end to end on real servers (v13 build 351, v14 build 371). Square or gridless scenes. Works with any system.
 - **No build step:** plain ES modules. three.js r187 is vendored in `vendor/three/` (MIT, see `vendor/three/LICENSE`).
 - **Original code:** written from scratch against Foundry's public API and three.js. It is not derived from any other 3D module.
 
@@ -29,7 +29,7 @@ toggle on and off.
 | **Fog of war & vision** | For players (when the scene has token vision, and the world setting is on), each square is visible, explored or unseen. Visibility comes from Foundry's own `canvas.visibility.testVisibility`, so lights, darkvision, walls and vision modes all count. Explored squares are shown desaturated and dim. Unseen squares are black, and walls, roofs and upper floors over them are not drawn, so the map layout doesn't leak. The GM sees everything. |
 | **Lights & darkness** | The scene darkness level dims the 3D lighting. It follows Foundry's darkness transitions through `lightingRefresh`. Ambient lights and token lights become three.js point lights with their colour and radius; the 8 nearest to the camera's focus are used. |
 | **Tiles** | Floor tiles lie on the terrain, with rotation, mirroring, alpha and sort order. Overhead tiles (elevation at or above the scene's foreground elevation) become roofs at wall height. A roof fades out when your token is under it, when cutaway is on, or when the **Roofs** toggle is off. To players, hidden tiles are not shown. |
-| **Levels (v14)** | If the scene has native levels, each upper level is a floor plane at its elevation, using the level's image (transparent parts stay see-through). Walls, tokens and tiles are assigned to a level by id or by elevation. A **Visible levels** selector hides the floors above the one you pick. *This follows the v14 data shape as far as known, and has only been checked against a mock (see below).* |
+| **Levels (v14)** | Native scene levels are supported. Each upper level is a floor plane at its elevation, using the level's image; transparent parts stay see-through. Walls, tiles and lights are placed by their `levels`, tokens by their `level`. A wall with no levels sits on the ground. **The 3D view follows the level you are viewing in Foundry.** When you switch level, the floors above it, and their walls and tokens, are hidden. Roofs use the viewed level's top as their height. The **Visible levels** selector starts at the viewed level and can show all levels. Players never see tokens on other levels (v14 gives them no placeable). Editing a level rebuilds the view. The background and scene colour are read from the levels, so the deprecated v14 `Scene#background` / `backgroundColor` / `foregroundElevation` getters are never touched. |
 | Camera | Orbit (left-drag), pan (right-drag), zoom (wheel), 45° rotate buttons, recenter, and a top-down toggle. |
 
 Settings: wall height (squares), wall look (inherit from the map / texture / flat), wall texture, door texture, texture size, height paint step (squares), fog of war in 3D (world), and show grid in 3D (per client).
@@ -72,7 +72,7 @@ Then restart Foundry, enable **Foundry 3D View** in *Manage Modules*, open a sce
 
 ## How it was tested
 
-**Real Foundry v13 (build 351): `npm run e2e`, 50 end-to-end checks, all passing.**
+**Real Foundry: `npm run e2e` passes on both versions. v13 build 351 runs 51 checks (Ordem Paranormal system). v14 build 371 runs 60 checks (CoC7 system), including 9 for native levels.**
 The script `tools/foundry-e2e.mjs` drives a real Foundry server through headless Edge (playwright-core), using real mouse and keyboard input. It runs in a throwaway data folder, never in your own worlds. It:
 - creates a world;
 - enables the module (and the system's required modules);
@@ -111,13 +111,27 @@ What it covers:
   - opening a door, which reveals the next room in the fog;
   - a locked door staying locked;
   - the GM closing a door and the player's 3D door following.
-- No console errors from the module.
+- **v14 levels:**
+  - both levels are read;
+  - viewing the ground hides the floor above it, with its wall and token;
+  - the selector starts at the viewed level;
+  - an upper token stands at its level's height;
+  - switching the viewed level in Foundry keeps the 3D view open and follows it;
+  - the roof height follows the viewed level;
+  - editing a level rebuilds the view;
+  - a player does not see a token on another level.
+- No console errors from the module, and **no deprecation warnings caused by the module**. This check found a v13 one, `TileDocument#overhead`, which is fixed now.
 
 Running it against real Foundry found bugs that the mock could not:
 - **Toggle fired twice.** In v13 the cube button opened and immediately closed the view, because v13 calls both `onChange` and the legacy `onClick`.
 - **Toolbar hidden by notifications.** Foundry's notifications (top centre) covered the toolbar, so it moved to the bottom centre.
 - **Content visible while loading.** For a player, tokens and the map were visible for a moment while the scene loaded. Players now start fully fogged and hidden until the first visibility update.
 - **Light grey sky.** The default scene colour made the 3D sky light grey; it is darkened now.
+- **v14-specific findings:**
+  - Scene colour, background and roof height moved into levels.
+  - Tokens on other levels have no placeable, so falling back to "not hidden" would have leaked them to players.
+  - The Wall config body is now a scrollable `.standard-form`, so the 3D texture field goes inside it.
+  - The test harness itself had to change: v14 creates worlds through `/create`, and the join form field is `userId`.
 - It also confirmed real behaviour that the module already handled. Foundry chooses its own padding (`sceneX` was 300, not 200), and the module uses `canvas.dimensions`. In v13, `token.x` changes during the movement animation.
 
 How to run it yourself (Windows, portable Foundry):
@@ -129,17 +143,17 @@ node "<Foundry>/App/resources/app/main.mjs" --dataPath="<testdata>" --port=30013
 $env:FOUNDRY_URL="http://localhost:30013"; $env:FOUNDRY_SYSTEM="ordemparanormal"; npm run e2e
 ```
 
-Foundry v13 needs Node 20 to 22 (Node 24 is refused). A portable Node 22 works.
+Foundry v13 needs Node 20 to 22 (Node 24 is refused), and a portable Node 22 works. Foundry v14 needs Node 24. For v14, run the installed app's `resources/app/main.mjs` the same way, with `FOUNDRY_SYSTEM=CoC7` or any v14 system.
 
 Other layers:
-1. **Unit tests** (`npm test`, 72, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
+1. **Unit tests** (`npm test`, 78, vitest). They cover the pure logic: coordinates, walls and doors, heights, brush and undo, the auto pass, the terrain mesh, line of sight and fog, cutaway, lights, tiles, levels, measurement and the scene model.
 2. **Dev page** (`dev/index.html`). The renderer, toolbar and interaction on a generated sample dungeon, with no Foundry needed.
 3. **Mock Foundry harness** (`dev/foundry-mock.html`). The real module runs against fake Foundry globals, as GM, as a player, and with v14-style levels.
 4. **Headless self-tests** (`npm run selftest`, 140 checks over 5 pages). This includes a performance page: a 120×120 map with 2400 walls and 150 tokens loads in about 0.6 s and renders a frame in about 9 ms on SwiftShader.
 
 ### Still unverified
-- **Foundry v14.** I have only checked levels against the mock. There is a v14 installer in the owner's Downloads, but it was not installed.
-- **Real GPUs and other systems.** All browser runs used SwiftShader, and only the Ordem Paranormal system was tested.
+- **Real GPUs and other systems.** All browser runs used SwiftShader. Only Ordem Paranormal (v13) and CoC7 (v14) were tested.
+- **v14 levels:** level `visibility.levels` (seeing other levels through a level) and the level `fit`/`scale`/`rotation` texture options are not used. Each level's image is drawn over the whole scene rectangle, offset by `textures.offsetX/Y`.
 - **Saved fog exploration** from Foundry is not read; explored squares last for the session only.
 
 ## Development
@@ -175,13 +189,17 @@ Screenshots (`dev/screenshots/`):
 | `dev-page-paint.png` | Height paint mode |
 | `foundry-mock-gm.png` | The real module in the mock Foundry, as GM |
 | `foundry-mock-player.png` | The real module in the mock Foundry, as a player |
-| `foundry-real-gm.png` | **Real Foundry v13**: the GM with the 3D view open |
-| `foundry-real-ruler.png` | Real Foundry: a selected token and the hover ruler |
-| `foundry-real-cutaway.png` | Real Foundry: cutaway walls |
-| `foundry-real-walls-texture.png` | Real Foundry: textured walls |
-| `foundry-real-wall-config.png` | Real Foundry: the "3D texture" field in the Wall config sheet |
-| `foundry-real-player.png` | Real Foundry: the player view with fog |
-| `foundry-real-player-door.png` | Real Foundry: the player after opening the door from 3D |
+| `foundry-real-v13-gm.png` | **Real Foundry v13**: the GM with the 3D view open |
+| `foundry-real-v13-ruler.png` | Real Foundry: a selected token and the hover ruler |
+| `foundry-real-v13-cutaway.png` | Real Foundry: cutaway walls |
+| `foundry-real-v13-walls-texture.png` | Real Foundry: textured walls |
+| `foundry-real-v13-wall-config.png` | Real Foundry: the "3D texture" field in the Wall config sheet |
+| `foundry-real-v13-player.png` | Real Foundry: the player view with fog |
+| `foundry-real-v13-player-door.png` | Real Foundry: the player after opening the door from 3D |
+| `foundry-real-v14-*.png` | The same views on **Foundry v14** |
+| `foundry-real-v14-levels-ground.png` | v14: viewing the ground level, with the balcony hidden |
+| `foundry-real-v14-levels-upper.png` | v14: after switching to the balcony level in Foundry |
+| `foundry-real-v14-levels-player.png` | v14: the player on the ground, with the archer upstairs hidden |
 
 ### Releasing a new version
 

@@ -20,7 +20,7 @@ import { makeGrid } from "./coords.mjs";
 import { normalizeHeightMap } from "./heights.mjs";
 import { wallData } from "./walls.mjs";
 import { MODULE_ID } from "./constants.mjs";
-import { tileData, lightData, tokenLightData, levelsFromScene, levelIndexFor } from "./scene-extras.mjs";
+import { tileData, lightData, tokenLightData, levelsFromScene, levelIndexFor, hasNativeLevels } from "./scene-extras.mjs";
 
 /** Normalize a token document (or plain object) to what the renderer needs. */
 export function tokenData(doc) {
@@ -43,16 +43,16 @@ export function tokenData(doc) {
 }
 
 /**
- * Find the scene background in a version-tolerant way (v13 `scene.background`, v14 levels,
- * legacy `scene.img`).
+ * Find the ground background in a version-tolerant way. v14 keeps it on the lowest level (the
+ * Scene#background getter is deprecated there and always reads the first-created level, so it is
+ * never touched); v13 has scene.background.
  */
 export function sceneBackground(scene) {
-  const bg =
-    scene.background ??
-    scene.initialLevel?.background ??
-    scene.firstLevel?.background ??
-    scene.levels?.contents?.[0]?.background ??
-    null;
+  if (hasNativeLevels(scene)) {
+    const ground = levelsFromScene(scene)[0];
+    return { src: ground?.background.src ?? null, offsetX: ground?.background.offsetX ?? 0, offsetY: ground?.background.offsetY ?? 0 };
+  }
+  const bg = scene.background ?? null;
   return {
     src: bg?.src ?? scene.img ?? null,
     offsetX: Number(bg?.offsetX) || 0,
@@ -64,8 +64,10 @@ export function sceneBackground(scene) {
  * Build the model from Foundry-like objects.
  * @param {object} scene       Scene document (needs walls, tokens, flags, background)
  * @param {object} dimensions  canvas.dimensions (size, sceneX, sceneY, sceneWidth, sceneHeight, width, height, distance)
+ * @param {object} [options]
+ * @param {string} [options.viewedLevelId]  v14: id of the level being viewed (canvas.level.id)
  */
-export function buildSceneModel(scene, dimensions) {
+export function buildSceneModel(scene, dimensions, { viewedLevelId = null } = {}) {
   const grid = makeGrid({
     size: dimensions.size,
     sceneX: dimensions.sceneX,
@@ -81,6 +83,7 @@ export function buildSceneModel(scene, dimensions) {
     ...l,
     background: {
       src: l.background.src,
+      color: l.background.color,
       x: grid.sceneX + l.background.offsetX,
       y: grid.sceneY + l.background.offsetY,
       width: grid.sceneWidth,
@@ -100,23 +103,31 @@ export function buildSceneModel(scene, dimensions) {
     ...tokenDocs.map(tokenLightData).filter(Boolean),
   ];
   const heights = normalizeHeightMap(scene.flags?.[MODULE_ID]?.heights, grid.cols, grid.rows);
-  const baseBg = levels[0]?.background?.src ? { src: levels[0].background.src, offsetX: levels[0].background.x - grid.sceneX, offsetY: levels[0].background.y - grid.sceneY } : bg;
+  const native = hasNativeLevels(scene);
+  const viewedIdx = Math.max(0, levels.findIndex((l) => l.id === viewedLevelId));
+  const viewed = levels[viewedIdx];
+  // v14: colour and roof height come from the viewed level (the Scene getters are deprecated).
+  const backgroundColor = native ? viewed?.background.color ?? levels[0]?.background.color : scene.backgroundColor;
+  const fgElevation = native
+    ? (Number.isFinite(viewed?.top) ? viewed.top : (viewed?.bottom ?? 0) + (Number(scene.grid?.distance) || 5) * 4)
+    : scene.foregroundElevation;
   return {
     grid,
     background: {
-      src: bg.src ?? baseBg.src,
+      src: bg.src,
       x: grid.sceneX + bg.offsetX,
       y: grid.sceneY + bg.offsetY,
       width: grid.sceneWidth,
       height: grid.sceneHeight,
     },
-    backgroundColor: scene.backgroundColor ?? "#1b1b1f",
+    backgroundColor: backgroundColor ?? "#1b1b1f",
+    viewedLevelIndex: levels.length > 1 ? viewedIdx : null,
     walls,
     tokens,
     tiles,
     lights,
     darkness: Number(scene.environment?.darknessLevel ?? scene.darkness ?? 0) || 0,
-    foregroundElevation: Number(scene.foregroundElevation ?? scene.grid?.distance * 4) || 20,
+    foregroundElevation: Number(fgElevation ?? scene.grid?.distance * 4) || 20,
     levels,
     heights,
   };

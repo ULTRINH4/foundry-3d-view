@@ -112,7 +112,8 @@ export function tileData(doc) {
     hidden: !!doc.hidden,
     elevation: Number(doc.elevation) || 0,
     sort: Number(doc.sort) || 0,
-    overhead: doc.overhead !== undefined ? !!doc.overhead : null,
+    // Read raw data: v13+ keep a deprecated TileDocument#overhead getter that warns when touched.
+    overhead: (doc._source ?? doc).overhead !== undefined ? !!(doc._source ?? doc).overhead : null,
     level: doc.level ?? null,
   };
 }
@@ -176,15 +177,30 @@ export function levelsFromScene(scene) {
       const bottom = Number(elev.bottom ?? l.bottom ?? l.elevation ?? 0);
       const top = Number(elev.top ?? l.top ?? Infinity);
       const bg = l.background ?? {};
+      // v14: image offsets live in level.textures; older/mock data kept them on background.
+      const tx = l.textures ?? {};
       return {
         id: l.id ?? l._id ?? `level${i}`,
         name: l.name ?? `Level ${i + 1}`,
         bottom: Number.isFinite(bottom) ? bottom : 0,
         top: Number.isFinite(top) ? top : Infinity,
-        background: { src: bg.src ?? null, offsetX: Number(bg.offsetX) || 0, offsetY: Number(bg.offsetY) || 0 },
+        sort: Number(l.sort) || 0,
+        background: {
+          src: bg.src ?? null,
+          color: bg.color ? String(bg.color) : null,
+          offsetX: Number(tx.offsetX ?? bg.offsetX) || 0,
+          offsetY: Number(tx.offsetY ?? bg.offsetY) || 0,
+        },
       };
     })
-    .sort((a, b) => a.bottom - b.bottom);
+    .sort((a, b) => a.bottom - b.bottom || a.sort - b.sort);
+}
+
+/** Does this scene use v14 native levels (every v14 scene has at least one)? */
+export function hasNativeLevels(scene) {
+  const coll = scene?.levels;
+  if (!coll || typeof coll !== "object") return false;
+  return (coll.size ?? coll.contents?.length ?? coll.length ?? 0) > 0;
 }
 
 /**

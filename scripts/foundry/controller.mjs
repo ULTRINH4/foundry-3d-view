@@ -105,6 +105,7 @@ export class Tactics3DController {
       step: Math.round((Number(game.settings.get(MODULE_ID, "heightStep")) || 0.5) * distance * 1000) / 1000,
       unitLabel: canvas.scene.grid?.units ?? "",
       levels: this.model.levels,
+      viewedLevelIndex: this.model.viewedLevelIndex,
       initial: { cutaway: game.settings.get(MODULE_ID, "cutaway"), showRoofs: game.settings.get(MODULE_ID, "showRoofs") },
       onViewSettings: ({ cutaway, showRoofs }) => {
         game.settings.set(MODULE_ID, "cutaway", cutaway);
@@ -154,7 +155,7 @@ export class Tactics3DController {
   }
 
   async _loadScene() {
-    const model = buildSceneModel(canvas.scene, canvas.dimensions);
+    const model = buildSceneModel(canvas.scene, canvas.dimensions, { viewedLevelId: canvas.level?.id ?? null });
     model.background.src = resolveSrc(model.background.src);
     for (const tok of model.tokens) tok.src = resolveSrc(tok.src);
     for (const tile of model.tiles) tile.src = resolveSrc(tile.src);
@@ -332,6 +333,19 @@ export class Tactics3DController {
     }
     this._on("lightingRefresh", () => this._refreshDarkness());
 
+    // v14 scene levels: edits change floors/backgrounds, so rebuild (switching the viewed level
+    // already redraws the canvas and reloads us through canvasReady).
+    const reloadForLevel = foundry.utils.debounce?.(async () => {
+      if (!this.isOpen) return;
+      await this._loadScene();
+      if (!this.isOpen) return;
+      this._buildHud();
+      this._buildInteraction();
+    }, 300) ?? (() => {});
+    for (const hook of ["createLevel", "updateLevel", "deleteLevel"]) {
+      this._on(hook, (doc) => inScene(doc) && reloadForLevel());
+    }
+
     this._on("updateScene", (doc, changes) => {
       if (doc.id !== canvas.scene?.id) return;
       const raw = foundry.utils.getProperty(changes, `flags.${MODULE_ID}.heights`);
@@ -401,7 +415,9 @@ export class Tactics3DController {
         this.view.setTokenVisibility(doc.id, true, doc.hidden);
         continue;
       }
-      const visible = placeable ? (placeable.isVisible ?? placeable.visible) : !doc.hidden;
+      // v14 only creates placeables for the viewed level: no placeable means another level, which
+      // a player must not see (falling back to !hidden would leak tokens from other floors).
+      const visible = placeable ? (placeable.isVisible ?? placeable.visible) : false;
       this.view.setTokenVisibility(doc.id, !!visible && !doc.hidden, false);
     }
   }

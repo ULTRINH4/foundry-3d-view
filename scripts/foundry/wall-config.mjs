@@ -25,11 +25,16 @@ export function injectWallConfig(app, html) {
         : `<input type="text" name="${FIELD}" value="${value}" placeholder="path/to/texture.webp">`}
     </div>
     <p class="hint">${t("F3D.WallConfig.TextureHint")}</p>`;
-  // Put it at the end of the form body, before the footer buttons.
+  // v14 wraps the body in a scrollable .standard-form: append inside it. v13: before the footer.
   const form = root.tagName === "FORM" ? root : root.querySelector("form") ?? root;
-  const footer = form.querySelector("footer, .form-footer, .sheet-footer, button[type=submit]");
-  const anchor = footer?.closest?.("footer, .form-footer, .sheet-footer") ?? footer;
-  if (anchor?.parentElement) anchor.parentElement.insertBefore(group, anchor);
-  else form.appendChild(group);
+  const body = form.querySelector(".standard-form.scrollable, .scrollable");
+  if (body) {
+    body.appendChild(group);
+  } else {
+    const footer = form.querySelector("footer, .form-footer, .sheet-footer, button[type=submit]");
+    const anchor = footer?.closest?.("footer, .form-footer, .sheet-footer") ?? footer;
+    if (anchor?.parentElement) anchor.parentElement.insertBefore(group, anchor);
+    else form.appendChild(group);
+  }
   if (typeof app.setPosition === "function") app.setPosition({ height: "auto" });
 }

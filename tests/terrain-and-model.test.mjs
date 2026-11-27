@@ -98,3 +98,74 @@ describe("scene model", () => {
     expect(m.background).toMatchObject({ x: 0, y: 0, width: 100, height: 100 });
   });
 });
+
+describe("Foundry v14 scenes (native levels)", () => {
+  /** A v14-like scene whose deprecated Scene getters throw if touched. */
+  function v14Scene() {
+    const scene = {
+      walls: [
+        { id: "wAll", c: [0, 0, 100, 0], levels: new Set() },
+        { id: "wUp", c: [0, 100, 100, 100], levels: new Set(["up"]) },
+      ],
+      tokens: [
+        { id: "tG", x: 0, y: 0, level: "ground" },
+        { id: "tU", x: 100, y: 0, level: "up", elevation: 10 },
+      ],
+      tiles: [{ id: "roof", x: 0, y: 0, width: 100, height: 100, elevation: 10, texture: { src: "r.png" }, levels: new Set(["ground"]) }],
+      lights: [],
+      flags: {},
+      grid: { distance: 5 },
+      levels: {
+        size: 2,
+        contents: [
+          { id: "up", name: "Upper", sort: 1, elevation: { bottom: 10, top: 20 }, background: { src: "up.webp", color: "#000000" }, textures: { offsetX: 0, offsetY: 0 } },
+          { id: "ground", name: "Ground", sort: 0, elevation: { bottom: -Infinity, top: 10 }, background: { src: "g.webp", color: "#223344" }, textures: { offsetX: 7, offsetY: -3 } },
+        ],
+      },
+    };
+    for (const k of ["background", "backgroundColor", "foreground", "foregroundElevation"]) {
+      Object.defineProperty(scene, k, { get() { throw new Error(`deprecated Scene#${k} read`); } });
+    }
+    return scene;
+  }
+  const dims = { size: 100, sceneX: 100, sceneY: 100, sceneWidth: 200, sceneHeight: 100, width: 400, height: 300, distance: 5 };
+
+  it("never reads the deprecated Scene getters", () => {
+    expect(() => buildSceneModel(v14Scene(), dims, { viewedLevelId: "ground" })).not.toThrow();
+  });
+
+  it("ground background, colour and offsets come from the lowest level", () => {
+    const m = buildSceneModel(v14Scene(), dims, { viewedLevelId: "ground" });
+    expect(m.background).toEqual({ src: "g.webp", x: 107, y: 97, width: 200, height: 100 });
+    expect(m.backgroundColor).toBe("#223344");
+    expect(m.levels.map((l) => l.id)).toEqual(["ground", "up"]);
+    expect(m.levels[0].bottom).toBe(0); // -Infinity treated as the ground
+  });
+
+  it("documents land on their level (empty wall levels = ground)", () => {
+    const m = buildSceneModel(v14Scene(), dims, { viewedLevelId: "up" });
+    const byId = (arr, id) => arr.find((d) => d.id === id);
+    expect(byId(m.walls, "wAll").levelIndex).toBe(0);
+    expect(byId(m.walls, "wUp").levelIndex).toBe(1);
+    expect(byId(m.tokens, "tU").levelIndex).toBe(1);
+    expect(byId(m.tiles, "roof").levelIndex).toBe(0);
+  });
+
+  it("viewed level drives the level cutoff and the roof height", () => {
+    const g = buildSceneModel(v14Scene(), dims, { viewedLevelId: "ground" });
+    expect(g.viewedLevelIndex).toBe(0);
+    expect(g.foregroundElevation).toBe(10);
+    const u = buildSceneModel(v14Scene(), dims, { viewedLevelId: "up" });
+    expect(u.viewedLevelIndex).toBe(1);
+    expect(u.foregroundElevation).toBe(20);
+  });
+
+  it("a single default level behaves like a v13 scene", () => {
+    const s = v14Scene();
+    s.levels = { size: 1, contents: [s.levels.contents[1]] };
+    const m = buildSceneModel(s, dims, { viewedLevelId: "ground" });
+    expect(m.viewedLevelIndex).toBeNull();
+    expect(m.levels).toHaveLength(1);
+    expect(m.background.src).toBe("g.webp");
+  });
+});

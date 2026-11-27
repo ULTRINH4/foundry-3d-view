@@ -144,3 +144,13 @@ describe("height brush and history", () => {
     expect(h.pop()).toBeNull();
   });
 });
+
+describe("tileData on real documents", () => {
+  it("does not touch the deprecated TileDocument#overhead getter", () => {
+    const doc = { id: "t", x: 0, y: 0, width: 100, height: 100, texture: { src: "a.png" }, _source: { elevation: 0 } };
+    Object.defineProperty(doc, "overhead", { get() { throw new Error("deprecated overhead read"); } });
+    expect(() => tileData(doc)).not.toThrow();
+    expect(tileData(doc).overhead).toBeNull();
+    expect(tileData({ ...doc, _source: { overhead: true } }).overhead).toBe(true);
+  });
+});

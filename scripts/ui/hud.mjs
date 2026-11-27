@@ -17,6 +17,7 @@ const BRUSHES = [1, 3, 5];
  * @param {()=>object[]} o.getWalls            current wallData()[]
  * @param {(heights:object)=>void} o.onHeightsChanged
  * @param {{id:string,name:string}[]} [o.levels]  scene levels (shown as a selector when > 1)
+ * @param {number|null} [o.viewedLevelIndex]      level the selector starts at (v14 viewed level)
  * @param {(settings:object)=>void} [o.onViewSettings]  persist cutaway/roofs toggles
  * @param {{cutaway?:boolean, showRoofs?:boolean}} [o.initial]
  * @param {()=>{x:number,y:number}|null} [o.getFocus]
@@ -83,6 +84,7 @@ export function createHud(root, o) {
       opt.textContent = `≤ ${lv.name}`;
       sel.appendChild(opt);
     });
+    if (Number.isInteger(o.viewedLevelIndex)) sel.value = String(o.viewedLevelIndex);
     sel.addEventListener("change", () => view.setLevelCutoff(sel.value === "all" ? Infinity : Number(sel.value)));
     camGroup.appendChild(sel);
   }

@@ -331,6 +331,8 @@ export class View3D {
       ...(model.tiles ?? []).map((t) => this.upsertTile(t)),
     ]);
     this.setLights(model.lights ?? [], model.darkness ?? 0);
+    // v14: show the viewed level and the ones below it (Foundry redraws on level change).
+    this.setLevelCutoff(Number.isInteger(model.viewedLevelIndex) ? model.viewedLevelIndex : Infinity);
     this.resetCamera();
   }
 

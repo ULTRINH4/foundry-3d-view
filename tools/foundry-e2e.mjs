@@ -28,6 +28,7 @@ const browserPath = [
   "/usr/bin/chromium",
 ].filter(Boolean).find((p) => existsSync(p));
 
+let GEN = "v13"; // set from game.release once connected; screenshots are named per version
 const results = [];
 const check = (name, ok, info = "") => {
   results.push({ name, ok: !!ok, info });
@@ -41,9 +42,14 @@ const browser = await chromium.launch({
   args: ["--use-angle=swiftshader", "--enable-unsafe-swiftshader", "--autoplay-policy=no-user-gesture-required"],
 });
 
+const moduleDeprecations = [];
 function watchConsole(page, label) {
   const errors = [];
   page.on("console", (m) => {
+    const txt = m.text();
+    if (m.type() === "warning" && /deprecat|compatib/i.test(txt) && /foundry-3d-view/.test(txt)) {
+      moduleDeprecations.push(`[${label}] ${txt.slice(0, 300)}`);
+    }
     if (m.type() !== "error") return;
     const t = m.text();
     errors.push(t);
@@ -51,7 +57,7 @@ function watchConsole(page, label) {
   });
   page.on("pageerror", (e) => {
     errors.push(String(e));
-    console.log(`[${label} pageerror] ${String(e).slice(0, 400)}`);
+    console.log(`[${label} pageerror] ${(e.stack ?? String(e)).slice(0, 900)}`);
   });
   return errors;
 }
@@ -68,8 +74,10 @@ async function ensureWorldRunning(page) {
   if (page.url().includes("/setup")) {
     const exists = await page.evaluate((w) => game.worlds?.has(w), WORLD);
     if (!exists) {
-      const r = await post(page, "/setup", { action: "createWorld", id: WORLD, title: "F3D Test", system: SYSTEM });
-      if (r.status !== 200) throw new Error("createWorld failed: " + r.text);
+      const body = { action: "createWorld", id: WORLD, title: "F3D Test", system: SYSTEM };
+      let r = await post(page, "/setup", body); // v13
+      if (r.text.includes("Unsupported")) r = await post(page, "/create", body); // v14 moved it to /create
+      if ((r.status !== 200 || r.text.includes('"error"')) && !r.text.includes("already exists")) throw new Error("createWorld failed: " + r.text);
     }
     const r = await post(page, "/setup", { action: "launchWorld", world: WORLD });
     if (r.status !== 200 || r.text.includes("error")) throw new Error("launchWorld failed: " + r.text);
@@ -82,18 +90,21 @@ async function ensureWorldRunning(page) {
 }
 
 async function joinAs(page, userName) {
-  await page.goto(`${URL}/join`, { waitUntil: "networkidle" });
-  // v13 renders the join form after load.
-  await page.waitForFunction((name) => [...document.querySelectorAll("select[name=userid] option")].some((o) => o.textContent.trim() === name), userName, { timeout: 30000 }).catch(() => {});
+  // The join form is rendered after load (and v14 can be slow with another session active): retry.
+  for (let attempt = 0; attempt < 4; attempt++) {
+    await page.goto(`${URL}/join`, { waitUntil: "networkidle" });
+    const ok = await page.waitForFunction((name) => [...document.querySelectorAll("select[name=userid] option, select[name=userId] option")].some((o) => o.textContent.trim() === name), userName, { timeout: 20000 }).then(() => true, () => false);
+    if (ok) break;
+  }
   const userid = await page.evaluate((name) => {
-    const opt = [...document.querySelectorAll("select[name=userid] option")].find((o) => o.textContent.trim() === name);
+    const opt = [...document.querySelectorAll("select[name=userid] option, select[name=userId] option")].find((o) => o.textContent.trim() === name);
     return opt?.value;
   }, userName);
   if (!userid) {
-    const opts = await page.evaluate(() => [...document.querySelectorAll("select[name=userid] option")].map((o) => o.textContent.trim()));
+    const opts = await page.evaluate(() => [...document.querySelectorAll("select[name=userid] option, select[name=userId] option")].map((o) => o.textContent.trim()));
     throw new Error(`user ${userName} not found on /join (options: ${JSON.stringify(opts)})`);
   }
-  const r = await post(page, "/join", { action: "join", userid, password: "" });
+  const r = await post(page, "/join", { action: "join", userid, userId: userid, password: "" }); // v13 userid, v14 userId
   if (r.status !== 200) throw new Error("join failed: " + r.text);
   await page.goto(`${URL}/game`, { waitUntil: "domcontentloaded" });
   await page.waitForFunction(() => globalThis.game?.ready === true && canvas?.ready, null, { timeout: 120000 });
@@ -125,6 +136,8 @@ const gmErrors = watchConsole(gm, "gm");
 await ensureWorldRunning(gm);
 await joinAs(gm, "Gamemaster");
 check("GM joined world", await gm.evaluate(() => game.user.isGM));
+GEN = "v" + (await gm.evaluate(() => game.release?.generation ?? 13));
+console.log(`Foundry ${GEN} (${await gm.evaluate(() => game.version)})`);
 
 const enabled = await gm.evaluate(async () => {
   const cfg = game.settings.get("core", "moduleConfiguration");
@@ -191,6 +204,10 @@ const ids = await gm.evaluate(async () => {
     foregroundElevation: 20,
     flags: { "foundry-3d-view": { heights: json.heights } },
   });
+  // v14 keeps the background on the scene's level; creating with `background` doesn't fill it.
+  if (scene.levels?.size) {
+    await scene.initialLevel.update({ background: { src: bg, color: "#121214" }, elevation: { top: 20 } });
+  }
   // The sample is authored with 200px padding; Foundry decides the real padding, so shift by it.
   const dim = scene.getDimensions?.() ?? scene.dimensions;
   const dx = dim.sceneX - g.sceneX, dy = dim.sceneY - g.sceneY;
@@ -201,16 +218,14 @@ const ids = await gm.evaluate(async () => {
   const tokens = [];
   for (const t of json.tokens.filter((t) => !t.level)) {
     const friendly = t.disposition === 1;
-    let actorId = null;
-    if (friendly) {
-      const actor = await Actor.create({
-        name: t.name, type: actorType, img: imgs[t._id],
-        ownership: { default: 0, [player.id]: 3 },
-        prototypeToken: { actorLink: true, sight: { enabled: true }, texture: { src: imgs[t._id] } },
-        flags: { "foundry-3d-view": { e2e: true } },
-      });
-      actorId = actor.id;
-    }
+    // Every token gets an actor (some systems, e.g. CoC7 on v14, throw on actor-less tokens).
+    const actor = await Actor.create({
+      name: t.name, type: actorType, img: imgs[t._id],
+      ownership: friendly ? { default: 0, [player.id]: 3 } : { default: 0 },
+      prototypeToken: { actorLink: friendly, sight: { enabled: friendly }, texture: { src: imgs[t._id] } },
+      flags: { "foundry-3d-view": { e2e: true } },
+    });
+    const actorId = actor.id;
     tokens.push({
       name: t.name, x: t.x + dx, y: t.y + dy, width: t.width ?? 1, height: t.height ?? 1, elevation: t.elevation ?? 0,
       hidden: !!t.hidden, disposition: t.disposition, actorId, actorLink: friendly,
@@ -240,7 +255,11 @@ const ids = await gm.evaluate(async () => {
     sceneY: dim.sceneY,
   };
 });
-await gm.waitForFunction((id) => canvas.ready && canvas.scene?.id === id, ids.scene, { timeout: 60000 });
+await gm.waitForFunction((id) => canvas.ready && canvas.scene?.id === id, ids.scene, { timeout: 60000 }).catch(async () => {
+  console.log("scene not viewed yet:", await gm.evaluate(() => JSON.stringify({ ready: canvas.ready, viewed: canvas.scene?.id, loading: canvas.loading })));
+  await gm.evaluate((id) => game.scenes.get(id).view(), ids.scene);
+  await gm.waitForFunction((id) => canvas.ready && canvas.scene?.id === id, ids.scene, { timeout: 60000 });
+});
 await sleep(2500);
 check("scene built in Foundry", true, `scene ${ids.scene}, ${Object.keys(ids.tokens).length} tokens`);
 
@@ -283,7 +302,7 @@ check("scene loaded into 3D (walls/tokens/tiles/lights/background)", gmState.wal
 check("Foundry sidebar stays clickable above the overlay", gmState.sidebarOnTop);
 check("Foundry scene controls stay clickable above the overlay", gmState.controlsOnTop);
 check("darkness read from Foundry", Math.abs(gmState.darkness - 0.3) < 0.05, `darkness ${gmState.darkness}`);
-await gm.screenshot({ path: join(shots, "foundry-real-gm.png") });
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-gm.png`) });
 
 // Door: update in Foundry -> door swings in 3D
 const doorSwing = await gm.evaluate(async (id) => {
@@ -364,7 +383,7 @@ await gm.mouse.move(pt.x + 2, pt.y + 1);
 await sleep(400);
 const ruler = await gm.evaluate(() => document.querySelector(".f3d-ruler-label")?.textContent ?? "");
 check("hover ruler uses Foundry measurement", /ft/.test(ruler), ruler);
-await gm.screenshot({ path: join(shots, "foundry-real-ruler.png") });
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-ruler.png`) });
 pt = await screenOf("cell", { col: 7, row: 7 });
 await gm.mouse.click(pt.x, pt.y);
 await sleep(2500);
@@ -406,7 +425,7 @@ await gm.locator('.f3d-btn[data-key="cutaway"]').click();
 await sleep(1500);
 check("cutaway lowers walls", await gm.evaluate(() => [...game.modules.get("foundry-3d-view").api._controller.view.walls.values()].some((w) => w.cut < 0.5)));
 check("cutaway saved to client settings", await gm.evaluate(() => game.settings.get("foundry-3d-view", "cutaway") === true));
-await gm.screenshot({ path: join(shots, "foundry-real-cutaway.png") });
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-cutaway.png`) });
 await gm.locator('.f3d-btn[data-key="cutaway"]').click();
 
 // Darkness change follows Foundry
@@ -435,7 +454,7 @@ await gm.evaluate(() => {
   v.resetCamera({ x: 1000, y: 800 });
 });
 await sleep(1500);
-await gm.screenshot({ path: join(shots, "foundry-real-walls-texture.png") });
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-walls-texture.png`) });
 
 await gm.evaluate((id) => canvas.scene.walls.get(id).sheet.render(true), ids.plainWall);
 await gm.waitForSelector('[name="flags.foundry-3d-view.texture"]', { timeout: 15000 }).catch(() => {});
@@ -444,7 +463,7 @@ const fieldInfo = await gm.evaluate(() => {
   return el ? el.tagName.toLowerCase() : null;
 });
 check("Wall config sheet has the 3D texture field", !!fieldInfo, String(fieldInfo));
-await gm.screenshot({ path: join(shots, "foundry-real-wall-config.png") });
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-wall-config.png`) });
 if (fieldInfo) {
   await gm.evaluate((src) => {
     const el = document.querySelector('[name="flags.foundry-3d-view.texture"]');
@@ -489,7 +508,14 @@ await pl.keyboard.press("Shift+KeyV");
 await pl.waitForFunction(() => game.modules.get("foundry-3d-view").api.isOpen, null, { timeout: 30000 }).catch(() => {});
 check("player opens the view with the Shift+V keybinding", await pl.evaluate(() => game.modules.get("foundry-3d-view").api.isOpen));
 // Wait until the scene is fully loaded (the toolbar is built after loading).
-await pl.waitForFunction(() => !!game.modules.get("foundry-3d-view").api._controller?.interaction, null, { timeout: 60000 });
+await pl.waitForFunction(() => !!game.modules.get("foundry-3d-view").api._controller?.interaction, null, { timeout: 60000 }).catch(async (e) => {
+  console.log("player load stuck:", await pl.evaluate(() => {
+    const c = game.modules.get("foundry-3d-view").api._controller;
+    return JSON.stringify({ open: c.isOpen, opening: !!c._opening, view: !!c.view, model: !!c.model, hud: !!c.hud, bg: c.view?.bgTexture ? 1 : 0,
+      canvasReady: canvas.ready, scene: canvas.scene?.name, level: canvas.level?.id, overlay: !!document.getElementById("f3d-overlay") });
+  }));
+  throw e;
+});
 await sleep(2000);
 const plState = await pl.evaluate((ids) => {
   const c = game.modules.get("foundry-3d-view").api._controller;
@@ -514,7 +540,7 @@ check("player: hidden token not shown", !plState.ghost);
 check("player: secret door looks like a wall", plState.secretIsWall);
 check("player: fog states (own room visible, closed room unseen)", plState.heroCellVisible && plState.roomBUnseen);
 check("player: no GM paint tools", plState.noPaintTool);
-await pl.screenshot({ path: join(shots, "foundry-real-player.png") });
+await pl.screenshot({ path: join(shots, `foundry-real-${GEN}-player.png`) });
 
 // Paused game: player actions are refused.
 await gm.evaluate(() => game.togglePause(true, { broadcast: true }));
@@ -562,7 +588,7 @@ const after = await pl.evaluate((ids) => {
   return { roomB: v.fogStates?.[5 * v.grid.cols + 15], goblin: v.tokens.get(ids.tokens.goblin).group.visible, boss: v.tokens.get(ids.tokens.boss).group.visible };
 }, ids);
 check("player: opening the door reveals room B in the fog", after.roomB === 2, JSON.stringify(after));
-await pl.screenshot({ path: join(shots, "foundry-real-player-door.png") });
+await pl.screenshot({ path: join(shots, `foundry-real-${GEN}-player-door.png`) });
 
 // Live sync: the GM closes the door -> the player's 3D door swings back
 await gm.evaluate((id) => canvas.scene.walls.get(id).update({ ds: 0 }), ids.corridorDoor);
@@ -587,6 +613,140 @@ await pl.locator(".f3d-close").click();
 await sleep(500);
 check("close button removes the overlay", await pl.evaluate(() => !document.getElementById("f3d-overlay")));
 await gm.evaluate(() => game.modules.get("foundry-3d-view").api.close());
+
+/* ------------------------------------------------------------------------------------------ */
+/* Foundry v14: native scene levels                                                            */
+/* ------------------------------------------------------------------------------------------ */
+if (GEN >= "v14") {
+  await gm.evaluate(() => game.modules.get("foundry-3d-view").api.close());
+  await pl.evaluate(() => game.modules.get("foundry-3d-view").api.close());
+  const lv = await gm.evaluate(async (ids) => {
+    const old = game.scenes.getName("F3D Levels");
+    if (old) await old.delete();
+    const dungeon = canvas.scene.initialLevel.background.src;
+    const MOD = "/modules/foundry-3d-view";
+    const art = await import(`${MOD}/dev/art.mjs`);
+    const { modelFromJSON } = await import(`${MOD}/scripts/core/scene-model.mjs`);
+    const json = await fetch(`${MOD}/dev/sample-scene.json`).then((r) => r.json());
+    const FP = foundry.applications.apps.FilePicker.implementation;
+    const blob = await new Promise((ok) => art.drawBalcony(modelFromJSON(json)).toBlob(ok, "image/png"));
+    await FP.upload("data", "f3d-assets", new File([blob], "balcony.png", { type: "image/png" }), {}, { notify: false });
+    const scene = await Scene.create({
+      name: "F3D Levels", width: 2400, height: 1600, padding: 0.08, tokenVision: true,
+      grid: { size: 100, type: 1, distance: 5, units: "ft" },
+      environment: { darknessLevel: 0, globalLight: { enabled: true } },
+    });
+    const ground = scene.initialLevel;
+    await ground.update({ name: "Ground", background: { src: dungeon }, elevation: { bottom: 0, top: 10 } });
+    const [upper] = await scene.createEmbeddedDocuments("Level", [
+      { name: "Balcony", elevation: { bottom: 10, top: 20 }, background: { src: "f3d-assets/balcony.png" }, sort: 1 },
+    ]);
+    const dim = scene.getDimensions?.() ?? scene.dimensions;
+    const X = (v) => dim.sceneX + v * 100, Y = (v) => dim.sceneY + v * 100;
+    const walls = await scene.createEmbeddedDocuments("Wall", [
+      { c: [X(2), Y(2), X(9), Y(2)], levels: [ground.id] },
+      { c: [X(18), Y(8), X(22), Y(8)], levels: [upper.id] },
+    ]);
+    const actorType = game.documentTypes.Actor.find((t) => t !== "base");
+    const player = game.users.getName("Player");
+    const hero = await Actor.create({ name: "LvHero", type: actorType, ownership: { default: 0, [player.id]: 3 }, prototypeToken: { actorLink: true, sight: { enabled: true } }, flags: { "foundry-3d-view": { e2e: true } } });
+    const foe = await Actor.create({ name: "LvArcher", type: actorType, flags: { "foundry-3d-view": { e2e: true } } });
+    const toks = await scene.createEmbeddedDocuments("Token", [
+      { name: "LvHero", actorId: hero.id, actorLink: true, x: X(5), y: Y(5), level: ground.id, sight: { enabled: true }, disposition: 1, texture: { src: canvas.scene.tokens.contents[0].texture.src } },
+      { name: "LvArcher", actorId: foe.id, x: X(20), y: Y(10), elevation: 10, level: upper.id, disposition: -1, texture: { src: canvas.scene.tokens.contents[1].texture.src } },
+    ]);
+    await scene.activate();
+    return { scene: scene.id, ground: ground.id, upper: upper.id, groundWall: walls[0].id, upperWall: walls[1].id, hero: toks[0].id, archer: toks[1].id };
+  }, ids);
+  const viewScene = async (page) => {
+    await page.waitForFunction((id) => canvas.ready && canvas.scene?.id === id, lv.scene, { timeout: 30000 }).catch(async () => {
+      await page.evaluate((id) => game.scenes.get(id).view(), lv.scene);
+      await page.waitForFunction((id) => canvas.ready && canvas.scene?.id === id, lv.scene, { timeout: 60000 });
+    });
+    await sleep(1500);
+  };
+  await viewScene(gm);
+  // GM views the ground level
+  await gm.evaluate((lv) => (canvas.level?.id === lv.ground ? null : canvas.scene.view({ level: lv.ground })), lv);
+  await gm.waitForFunction((id) => canvas.ready && canvas.level?.id === id, lv.ground, { timeout: 60000 });
+  await sleep(1000);
+  await gm.evaluate(() => game.modules.get("foundry-3d-view").api.open());
+  await gm.waitForFunction(() => !!game.modules.get("foundry-3d-view").api._controller?.interaction, null, { timeout: 60000 });
+  await sleep(2500);
+  const onGround = await gm.evaluate((lv) => {
+    const c = game.modules.get("foundry-3d-view").api._controller;
+    const v = c.view;
+    return {
+      levels: c.model.levels.map((l) => l.name).join(","),
+      viewed: c.model.viewedLevelIndex,
+      floors: v.levelFloors.length,
+      upperFloorVisible: v.levelFloors.some((f) => f.mesh.visible),
+      archerVisible: v.tokens.get(lv.archer)?.group.visible,
+      heroVisible: v.tokens.get(lv.hero)?.group.visible,
+      upperWallShown: v.isWallShown(lv.upperWall),
+      groundWallShown: v.isWallShown(lv.groundWall),
+      archerY: v.tokens.get(lv.archer)?.target.y,
+      selector: document.querySelector(".f3d-level")?.value,
+      bg: !!v.bgTexture,
+    };
+  }, lv);
+  check("v14 levels: both levels read from the scene", onGround.levels === "Ground,Balcony" && onGround.floors === 1 && onGround.bg, JSON.stringify(onGround));
+  check("v14 levels: viewing the ground hides the floor above", onGround.viewed === 0 && !onGround.upperFloorVisible && !onGround.archerVisible && !onGround.upperWallShown && onGround.groundWallShown && onGround.heroVisible);
+  check("v14 levels: selector starts at the viewed level", onGround.selector === "0", String(onGround.selector));
+  check("v14 levels: upper token stands at its level height", Math.abs(onGround.archerY - 2) < 1e-6, String(onGround.archerY));
+  await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-levels-ground.png`) });
+
+  // Switch the viewed level in Foundry: the 3D view follows
+  await gm.evaluate((lv) => canvas.scene.view({ level: lv.upper }), lv);
+  await gm.waitForFunction((id) => canvas.ready && canvas.level?.id === id, lv.upper, { timeout: 60000 });
+  await gm.waitForFunction((id) => game.modules.get("foundry-3d-view").api._controller?.model?.viewedLevelIndex === 1, null, { timeout: 30000 }).catch(() => {});
+  await sleep(2500);
+  const onUpper = await gm.evaluate((lv) => {
+    const c = game.modules.get("foundry-3d-view").api._controller;
+    const v = c.view;
+    return {
+      open: c.isOpen,
+      viewed: c.model?.viewedLevelIndex,
+      upperFloorVisible: v?.levelFloors.some((f) => f.mesh.visible),
+      archerVisible: v?.tokens.get(lv.archer)?.group.visible,
+      upperWallShown: v?.isWallShown(lv.upperWall),
+      roofHeight: c.model?.foregroundElevation,
+    };
+  }, lv);
+  check("v14 levels: changing the viewed level keeps the 3D view open and follows it", onUpper.open && onUpper.viewed === 1, JSON.stringify(onUpper));
+  check("v14 levels: upper level floor, wall and token now shown", onUpper.upperFloorVisible && onUpper.archerVisible && onUpper.upperWallShown);
+  check("v14 levels: roof height follows the viewed level", onUpper.roofHeight === 20, String(onUpper.roofHeight));
+  await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-levels-upper.png`) });
+
+  // Level edits rebuild the view
+  await gm.evaluate((lv) => canvas.scene.levels.get(lv.upper).update({ name: "Balcony 2" }), lv);
+  await sleep(2500);
+  check("v14 levels: editing a level rebuilds the view", await gm.evaluate(() => game.modules.get("foundry-3d-view").api._controller.model?.levels?.[1]?.name === "Balcony 2"));
+  await gm.evaluate((lv) => canvas.scene.view({ level: lv.ground }), lv);
+  await gm.waitForFunction((id) => canvas.ready && canvas.level?.id === id, lv.ground, { timeout: 60000 });
+
+  // Player on the ground level: the enemy upstairs has no placeable and must stay hidden
+  await viewScene(pl);
+  await pl.evaluate(() => game.modules.get("foundry-3d-view").api.open());
+  await pl.waitForFunction(() => !!game.modules.get("foundry-3d-view").api._controller?.interaction, null, { timeout: 60000 });
+  await sleep(2500);
+  const plLv = await pl.evaluate((lv) => {
+    const c = game.modules.get("foundry-3d-view").api._controller;
+    c.syncVisibility();
+    const v = c.view;
+    return {
+      viewedLevel: canvas.level?.id === lv.ground,
+      archerPlaceable: !!canvas.tokens.get(lv.archer),
+      archerVisible: v.tokens.get(lv.archer)?.group.visible,
+      heroVisible: v.tokens.get(lv.hero)?.group.visible,
+    };
+  }, lv);
+  check("v14 levels (player): token on another level has no placeable and stays hidden", plLv.viewedLevel && !plLv.archerPlaceable && !plLv.archerVisible && plLv.heroVisible, JSON.stringify(plLv));
+  await pl.screenshot({ path: join(shots, `foundry-real-${GEN}-levels-player.png`) });
+  await pl.evaluate(() => game.modules.get("foundry-3d-view").api.close());
+  await gm.evaluate(() => game.modules.get("foundry-3d-view").api.close());
+}
+check("no deprecation warnings caused by the module", moduleDeprecations.length === 0, moduleDeprecations.slice(0, 2).join(" | "));
 
 const moduleErrors = [...gmErrors, ...plErrors].filter((e) => /foundry-3d-view|view3d|f3d/i.test(e));
 check("no console errors from the module", moduleErrors.length === 0, moduleErrors.slice(0, 3).join(" | "));
