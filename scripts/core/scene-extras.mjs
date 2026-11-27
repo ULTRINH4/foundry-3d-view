@@ -115,6 +115,9 @@ export function tileData(doc) {
     // Read raw data: v13+ keep a deprecated TileDocument#overhead getter that warns when touched.
     overhead: (doc._source ?? doc).overhead !== undefined ? !!(doc._source ?? doc).overhead : null,
     level: doc.level ?? null,
+    // 3D model shown instead of the image: a built-in id ("tree", "crate"...) or a .glb/.gltf path.
+    model: doc.flags?.["foundry-3d-view"]?.modelFile || doc.flags?.["foundry-3d-view"]?.model || null,
+    modelHeight: Number(doc.flags?.["foundry-3d-view"]?.modelHeight) || 1,
   };
 }
 

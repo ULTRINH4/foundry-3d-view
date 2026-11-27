@@ -51,6 +51,12 @@ export function createInteraction(view, o) {
     down = null;
     if (moved > 4) return;
     if (btn === 2) {
+      // Right-click on one of your tokens opens Foundry's Token HUD; elsewhere it releases.
+      const hit = view.pick(ev.clientX, ev.clientY);
+      if (hit?.type === "token" && o.onTokenContext && o.canControl(hit.id)) {
+        o.onTokenContext(hit.id);
+        return;
+      }
       o.onReleaseAll();
       clearHover();
       return;

@@ -396,6 +396,43 @@
    },
    "elevation": 20,
    "sort": 2
+  },
+  {
+   "_id": "tree1",
+   "x": 1200,
+   "y": 300,
+   "width": 100,
+   "height": 100,
+   "flags": {
+    "foundry-3d-view": {
+     "model": "tree"
+    }
+   }
+  },
+  {
+   "_id": "crate1",
+   "x": 2300,
+   "y": 1400,
+   "width": 100,
+   "height": 100,
+   "rotation": 20,
+   "flags": {
+    "foundry-3d-view": {
+     "model": "crate"
+    }
+   }
+  },
+  {
+   "_id": "car1",
+   "x": 300,
+   "y": 1200,
+   "width": 100,
+   "height": 200,
+   "flags": {
+    "foundry-3d-view": {
+     "model": "car"
+    }
+   }
   }
  ],
  "lights": [

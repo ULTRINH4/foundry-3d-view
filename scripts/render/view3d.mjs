@@ -15,6 +15,7 @@ import {
 } from "../core/walls.mjs";
 import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
 import { unlitBrightness } from "../core/lighting.mjs";
+import { createBuiltinModel, isCustomModel, loadCustomModel } from "./models.mjs";
 import { FOG } from "../core/vision.mjs";
 import {
   SPRITE_FACING, tokenFacingYaw, directionRow, animationColumn, sheetCellUV, snapTacticsYaw,
@@ -175,6 +176,10 @@ export class View3D {
     this.darkness = 0;
     this.roofFocus = []; // canvas points; roofs above them fade out
     this.textureCache = new Map();
+    this.effects = new Map(); // id -> { mesh, texture } (mirrored canvas animations, e.g. Sequencer)
+    this.activeTokenId = null; // combatant whose turn it is
+    this.onFrame = null; // callback(dt) before each render (the adapter syncs effects here)
+    this._pan = null;
     this.topDown = false;
     this._saved = null;
     this._disposed = false;
@@ -733,6 +738,110 @@ export class View3D {
     }).catch((e) => console.warn("foundry-3d-view | wall texture failed", src, e));
   }
 
+  /* ---------------------------------------------------------------------------------------- */
+  /* Combat & HUD helpers                                                                     */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /** Smoothly move the camera so it looks at a canvas point (keeps angle and zoom). */
+  panToCanvasPoint(px, py) {
+    if (!this.grid) return;
+    const w = canvasToWorld(this.grid, px, py);
+    this._pan = new THREE.Vector3(w.x, this.controls.target.y, w.z);
+  }
+
+  /** Green pulsing ring under the token whose turn it is (null clears it). */
+  setActiveToken(id) {
+    this.activeTokenId = id ?? null;
+    if (!this.activeRing) {
+      const mat = new THREE.MeshBasicMaterial({ color: 0x3ddc84, side: THREE.DoubleSide, transparent: true, opacity: 0.9, depthWrite: false });
+      this.activeRing = new THREE.Mesh(new THREE.RingGeometry(0.58, 0.7, 48).rotateX(-Math.PI / 2), mat);
+      this.activeRing.renderOrder = 4;
+      this.activeRing.userData.r = 1;
+    }
+    const entry = id ? this.tokens.get(id) : null;
+    this.activeRing.removeFromParent();
+    this.activeRing.visible = !!entry;
+    if (entry) {
+      const t = entry.data;
+      this.activeRing.userData.r = Math.max(t.width, t.height);
+      this.activeRing.position.set(0, 0.08, 0);
+      entry.group.add(this.activeRing);
+    }
+  }
+
+  /** Screen rectangle (client px) around a token's standee, or null when not shown. */
+  tokenScreenRect(id) {
+    const entry = this.tokens.get(id);
+    if (!entry || !entry.group.visible) return null;
+    this.camera.updateMatrixWorld();
+    entry.group.updateMatrixWorld(true);
+    const box = new THREE.Box3().setFromObject(entry.group);
+    const r = this.renderer.domElement.getBoundingClientRect();
+    let x0 = Infinity, y0 = Infinity, x1 = -Infinity, y1 = -Infinity;
+    for (const x of [box.min.x, box.max.x]) for (const y of [box.min.y, box.max.y]) for (const z of [box.min.z, box.max.z]) {
+      const p = new THREE.Vector3(x, y, z).project(this.camera);
+      const sx = r.left + ((p.x + 1) / 2) * r.width, sy = r.top + ((1 - p.y) / 2) * r.height;
+      x0 = Math.min(x0, sx); y0 = Math.min(y0, sy); x1 = Math.max(x1, sx); y1 = Math.max(y1, sy);
+    }
+    return { x: x0, y: y0, width: x1 - x0, height: y1 - y0 };
+  }
+
+  /* ---------------------------------------------------------------------------------------- */
+  /* Mirrored canvas effects (combat animations)                                              */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /**
+   * Show an effect in 3D. `source` is the element the 2D effect plays (video, image or canvas),
+   * so the 3D copy stays in sync with it.
+   */
+  addEffect(id, source) {
+    this.removeEffect(id);
+    let texture;
+    if (source instanceof HTMLVideoElement) texture = new THREE.VideoTexture(source);
+    else if (source instanceof HTMLCanvasElement) texture = new THREE.CanvasTexture(source);
+    else texture = new THREE.Texture(source);
+    texture.colorSpace = THREE.SRGBColorSpace;
+    texture.needsUpdate = true;
+    const mat = new THREE.MeshBasicMaterial({ map: texture, transparent: true, depthWrite: false, side: THREE.DoubleSide });
+    const mesh = new THREE.Mesh(this.planeGeometry, mat);
+    mesh.renderOrder = 6;
+    mesh.visible = false;
+    this.overlayGroup.add(mesh);
+    this.effects.set(id, { mesh, texture, source });
+    return true;
+  }
+
+  /**
+   * Place an effect: canvas centre, size (px), rotation (radians, clockwise on screen), opacity,
+   * optional texture frame (for sprite sheets) and elevation (units).
+   */
+  updateEffect(id, { x, y, width, height, rotation = 0, alpha = 1, visible = true, frame = null, elevation = 0 }) {
+    const fx = this.effects.get(id);
+    if (!fx || !this.grid) return;
+    const g = this.grid;
+    const w = canvasToWorld(g, x, y);
+    const ground = Math.max(this.terrainYAt(x, y), unitsToWorldY(g, elevation));
+    fx.mesh.position.set(w.x, ground + 0.35, w.z);
+    fx.mesh.rotation.set(0, -rotation, 0);
+    fx.mesh.scale.set(Math.max(0.01, width / g.size), 1, Math.max(0.01, height / g.size));
+    fx.mesh.material.opacity = alpha;
+    fx.mesh.visible = visible && alpha > 0.01;
+    if (frame) {
+      fx.texture.repeat.set(frame.w, frame.h);
+      fx.texture.offset.set(frame.x, 1 - frame.y - frame.h);
+    }
+    if (!(fx.source instanceof HTMLVideoElement)) fx.texture.needsUpdate = fx.source instanceof HTMLCanvasElement;
+  }
+
+  removeEffect(id) {
+    const fx = this.effects.get(id);
+    if (!fx) return;
+    fx.mesh.removeFromParent();
+    fx.mesh.material.dispose();
+    fx.texture.dispose();
+    this.effects.delete(id);
+  }
+
   /** Sprite facing mode (see SPRITE_FACING). */
   setSpriteFacing(mode) {
     this.options.spriteFacing = Object.values(SPRITE_FACING).includes(mode) ? mode : SPRITE_FACING.CAMERA;
@@ -973,6 +1082,7 @@ export class View3D {
   async upsertTile(t) {
     const existing = this.tiles.get(t.id);
     if (existing) this.removeTile(t.id);
+    if (t.model && !(t.hidden && !this.options.isGM) && t.width > 0 && t.height > 0) return this._upsertModelTile(t);
     if (!t.src || (t.hidden && !this.options.isGM) || t.width <= 0 || t.height <= 0) return;
     const g = this.grid;
     const overhead = isOverheadTile(t, this.model?.foregroundElevation);
@@ -1004,10 +1114,60 @@ export class View3D {
     }
   }
 
+  /** A tile drawn as a 3D model filling its footprint (rotation and mirroring follow the tile). */
+  async _upsertModelTile(t) {
+    const g = this.grid;
+    const li = t.levelIndex ?? 0;
+    const levelY = li > 0 && this.model?.levels?.[li] ? levelFloorY(this.model.levels[li], g) : null;
+    const ground = levelY ?? unitsToWorldY(g, maxHeightUnderRect(this.heights, g, t.x, t.y, t.width, t.height));
+    const p = tilePlacement(t, g, { floorY: ground, overhead: false });
+    const group = new THREE.Group();
+    group.position.set(p.cx, ground, p.cz);
+    group.rotation.y = p.angle;
+    group.scale.set(p.width * (p.mirrorX ? -1 : 1), ((p.width + p.depth) / 2) * (t.modelHeight || 1), p.depth * (p.mirrorY ? -1 : 1));
+    this.tileGroup.add(group);
+    const entry = { data: t, group, mesh: null, isModel: true, overhead: false, baseOpacity: 1, levelHidden: !this._levelVisible(li) };
+    this.tiles.set(t.id, entry);
+    let model = null;
+    try {
+      if (isCustomModel(t.model)) {
+        let url = t.model;
+        try {
+          url = this.options.resolveSrc(t.model) ?? t.model;
+        } catch {
+          /* raw path */
+        }
+        this._modelCache ??= new Map();
+        if (!this._modelCache.has(url)) this._modelCache.set(url, loadCustomModel(url));
+        model = (await this._modelCache.get(url)).clone(true);
+      } else {
+        model = createBuiltinModel(t.model);
+      }
+    } catch (e) {
+      console.warn("foundry-3d-view | 3D model failed", t.model, e);
+    }
+    if (this.tiles.get(t.id) !== entry || !model) return;
+    // Fog/light-aware copies of the model's materials; picking ignores props.
+    model.traverse((o) => {
+      if (!o.isMesh) return;
+      const mats = Array.isArray(o.material) ? o.material : [o.material];
+      const fogged = mats.map((m) => this._fogged(m.clone(), "dilate"));
+      o.material = Array.isArray(o.material) ? fogged : fogged[0];
+    });
+    group.add(model);
+    entry.mesh = model;
+  }
+
   removeTile(id) {
     const e = this.tiles.get(id);
     if (!e) return;
     e.group.removeFromParent();
+    if (e.isModel) {
+      // Materials are per-tile copies; geometry of custom models is shared with the cache.
+      e.mesh?.traverse((o) => o.isMesh && [].concat(o.material).forEach((m) => m.dispose()));
+      this.tiles.delete(id);
+      return;
+    }
     e.mesh.material.dispose();
     this.tiles.delete(id);
   }
@@ -1479,7 +1639,8 @@ export class View3D {
   }
 
   _loop(now) {
-    const dt = Math.min(0.1, (now - this._last) / 1000);
+    const rawDt = Math.max(0, (now - this._last) / 1000);
+    const dt = Math.min(0.1, rawDt);
     this._last = now;
     if (this._rotAnim) {
       const step = Math.sign(this._rotAnim.left) * Math.min(Math.abs(this._rotAnim.left), dt * Math.PI * 1.6);
@@ -1490,11 +1651,32 @@ export class View3D {
         if (this.cameraMode === "tactics" && !this.topDown) this._snapTactics();
       }
     }
+    if (this._pan) {
+      // Smooth camera pan (combat turns): move target and camera together.
+      // Time-based (not frame-based) so it arrives on time even at low frame rates.
+      const step = 1 - Math.exp(-Math.min(rawDt, 1) * 6);
+      const d = this._pan.clone().sub(this.controls.target).multiplyScalar(step);
+      this.controls.target.add(d);
+      this.camera.position.add(d);
+      if (this._pan.distanceTo(this.controls.target) < 0.02) {
+        this.controls.target.copy(this._pan);
+        this._pan = null;
+      }
+    }
     this.controls.update();
     const k = 1 - Math.exp(-dt * 14);
     const target = this.controls.target;
     const cam = this.camera.position;
     this._time = (this._time ?? 0) + dt;
+    try {
+      this.onFrame?.(dt);
+    } catch (e) {
+      console.warn("foundry-3d-view | frame callback failed", e);
+    }
+    if (this.activeRing?.visible) {
+      const s = 1 + 0.08 * Math.sin(this._time * 5);
+      this.activeRing.scale.set(this.activeRing.userData.r * s, 1, this.activeRing.userData.r * s);
+    }
 
     // Camera polar angle drives how far standees lean back (flat when seen from straight above).
     const offset = cam.clone().sub(target);
@@ -1558,6 +1740,10 @@ export class View3D {
 
     // Roofs fade out when disabled, in cutaway, or when one of the focus tokens is under them.
     for (const [, t] of this.tiles) {
+      if (t.isModel) {
+        t.group.visible = !t.levelHidden;
+        continue;
+      }
       let goal = t.baseOpacity;
       if (t.levelHidden) goal = 0;
       else if (t.overhead) {
@@ -1585,6 +1771,8 @@ export class View3D {
 
   dispose() {
     this._disposed = true;
+    for (const id of [...this.effects.keys()]) this.removeEffect(id);
+    this.onFrame = null;
     this.renderer.setAnimationLoop(null);
     this._resizeObserver.disconnect();
     this.clear();

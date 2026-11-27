@@ -76,7 +76,7 @@ async function run() {
   r.opens = api().isOpen && !!document.getElementById("f3d-overlay");
   r.overlayAfterBoard = document.getElementById("board").nextElementSibling?.id === "f3d-overlay";
   const view = window.__f3dView = findView();
-  r.viewBuilt = !!view && view.walls.size > 0 && view.tokens.size === 6 && view.tiles.size === 2;
+  r.viewBuilt = !!view && view.walls.size > 0 && view.tokens.size === 6 && view.tiles.size === 5;
   r.lightsLoaded = view.lights.length === 4; // 3 ambient + hero torch
   r.darknessApplied = Math.abs(view.darkness - json.darkness) < 1e-6;
 

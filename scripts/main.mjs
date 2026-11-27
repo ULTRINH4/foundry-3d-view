@@ -5,6 +5,7 @@ import { MODULE_ID } from "./core/constants.mjs";
 import { Tactics3DController } from "./foundry/controller.mjs";
 import { injectWallConfig, openBulkWallDialog } from "./foundry/wall-config.mjs";
 import { injectTokenConfig } from "./foundry/token-config.mjs";
+import { injectTileConfig, exportModelsToData } from "./foundry/tile-config.mjs";
 
 const controller = new Tactics3DController();
 const TOOL = "f3dToggle";
@@ -145,6 +146,22 @@ Hooks.once("init", () => {
     type: Boolean,
     default: true,
   });
+  game.settings.register(MODULE_ID, "combatFollow", {
+    name: "F3D.Settings.CombatFollow.Name",
+    hint: "F3D.Settings.CombatFollow.Hint",
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
+  game.settings.register(MODULE_ID, "mirrorAnimations", {
+    name: "F3D.Settings.MirrorAnimations.Name",
+    hint: "F3D.Settings.MirrorAnimations.Hint",
+    scope: "client",
+    config: true,
+    type: Boolean,
+    default: true,
+  });
   game.settings.register(MODULE_ID, "cutaway", { scope: "client", config: false, type: Boolean, default: false });
   game.settings.register(MODULE_ID, "cameraMode", {
     name: "F3D.Settings.CameraMode.Name",
@@ -193,6 +210,8 @@ Hooks.once("ready", () => {
       open: () => controller.open(),
       close: () => controller.close(),
       toggle: () => controller.toggle(),
+      /** Export the built-in 3D models as .glb files into the data folder (GM). */
+      exportModels: () => exportModelsToData(),
       get isOpen() {
         return controller.isOpen;
       },
@@ -223,6 +242,18 @@ Hooks.on("getSceneControlButtons", (controls) => {
     const tokens = controls.tokens ?? controls.token;
     if (tokens?.tools) tokens.tools[TOOL] = tool;
     // Walls controls: apply a 3D texture/height to every selected wall (GM only).
+    const tiles = controls.tiles;
+    if (tiles?.tools && game.user.isGM) {
+      tiles.tools.f3dExportModels = {
+        name: "f3dExportModels",
+        title: "F3D.TileConfig.ExportTool",
+        icon: "fa-solid fa-cubes",
+        order: 100,
+        button: true,
+        visible: true,
+        onChange: () => exportModelsToData(),
+      };
+    }
     const walls = controls.walls;
     if (walls?.tools && game.user.isGM) {
       walls.tools.f3dWallStyle = {
@@ -243,6 +274,8 @@ Hooks.on("renderWallConfig", (app, html) => injectWallConfig(app, html));
 // Directional / animated sprite sheet fields in the Token configuration sheets.
 Hooks.on("renderTokenConfig", (app, html) => injectTokenConfig(app, html));
 Hooks.on("renderPrototypeTokenConfig", (app, html) => injectTokenConfig(app, html));
+// 3D model fields in the Tile configuration sheet.
+Hooks.on("renderTileConfig", (app, html) => injectTileConfig(app, html));
 
 // Leaving the game view (e.g. scene deleted) must not leave a stale overlay around.
 Hooks.on("canvasTearDown", () => {

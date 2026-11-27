@@ -15,6 +15,7 @@ import { cellCenter, tokenCenter } from "../core/coords.mjs";
 import { View3D } from "../render/view3d.mjs";
 import { createHud } from "../ui/hud.mjs";
 import { createInteraction } from "../ui/interact.mjs";
+import { EffectsBridge } from "./effects-bridge.mjs";
 
 const t = (key) => game.i18n.localize(key);
 
@@ -31,6 +32,7 @@ export class Tactics3DController {
     this._pendingHeights = null;
     this._opening = null;
     this._explored = new Map(); // sceneId -> Uint8Array (fog memory for this session)
+    this.effects = new EffectsBridge();
     this._fogQueued = false;
   }
 
@@ -91,6 +93,10 @@ export class Tactics3DController {
     this._buildHud();
     this._buildInteraction();
     this._registerHooks();
+    this._hudTimer = setInterval(() => {
+      const hud = canvas.tokens?.hud ?? canvas.hud?.token;
+      if (hud?.rendered && hud.object) this._positionTokenHUD(hud);
+    }, 100);
     this._visTimer = setInterval(() => {
       this.syncVisibility();
       this._updateRoofFocus();
@@ -143,6 +149,7 @@ export class Tactics3DController {
       onReleaseAll: () => canvas.tokens?.releaseAll(),
       onMoveToken: (id, cell) => this._moveToken(id, cell),
       onToggleDoor: (id) => this._toggleDoor(id),
+      onTokenContext: (id) => this._openTokenHUD(id),
       measure: (from, to) => this._measure(from, to),
     });
   }
@@ -181,6 +188,9 @@ export class Tactics3DController {
     this.syncVisibility(true);
     this._updateFog();
     this._syncSelection();
+    if (game.settings.get(MODULE_ID, "mirrorAnimations")) this.effects.start(view);
+    else this.effects.stop();
+    this._syncCombat(false);
     this._updateRoofFocus();
     const focus = this._focusPoint();
     if (focus) this.view.resetCamera(focus);
@@ -203,7 +213,15 @@ export class Tactics3DController {
     for (const [name, id] of this._hooks) Hooks.off(name, id);
     this._hooks = [];
     clearInterval(this._visTimer);
+    clearInterval(this._hudTimer);
     this._flushHeights();
+    this.effects.stop();
+    if (this._patchedHUD) {
+      delete this._patchedHUD.setPosition; // back to the class method
+      delete this._patchedHUD._f3dSetPosition;
+      this._patchedHUD.render?.();
+      this._patchedHUD = null;
+    }
     this.interaction?.destroy();
     this.hud?.destroy();
     this.view?.dispose();
@@ -384,10 +402,67 @@ export class Tactics3DController {
       this._buildInteraction();
     });
 
+    // Combat: follow the active combatant and mark it.
+    for (const hook of ["combatStart", "combatTurn", "combatRound", "deleteCombat", "createCombat"]) {
+      this._on(hook, () => setTimeout(() => this._syncCombat(true), 50));
+    }
+    this._on("updateCombat", (combat, changes) => {
+      if ("turn" in changes || "round" in changes || "started" in changes || "combatants" in changes) setTimeout(() => this._syncCombat(true), 50);
+    });
+    // Foundry's Token HUD: keep it over the 3D standee while the view is open.
+    this._on("renderTokenHUD", (hud) => this._positionTokenHUD(hud));
     this._on("sightRefresh", () => {
       this.syncVisibility();
       this._queueFog();
     });
+  }
+
+  /** Mark the combatant whose turn it is and (optionally) pan the camera to it. */
+  _syncCombat(pan) {
+    if (!this.view) return;
+    const combat = game.combat;
+    const active = combat?.started && (!combat.scene || combat.scene.id === canvas.scene?.id) ? combat.combatant : null;
+    const id = active?.tokenId ?? active?.token?.id ?? null;
+    const shown = id && this.view.tokens.get(id)?.group.visible;
+    this.view.setActiveToken(shown ? id : null);
+    if (pan && shown && game.settings.get(MODULE_ID, "combatFollow")) {
+      const doc = canvas.scene.tokens.get(id);
+      if (doc) this.view.panToCanvasPoint(...Object.values(tokenCenter(canvas.grid, doc)));
+    }
+  }
+
+  /** Right-click on a standee: control it and open Foundry's Token HUD over it. */
+  _openTokenHUD(id) {
+    const p = canvas.tokens?.get(id);
+    if (!p || !(game.user.isGM || p.isOwner)) return;
+    if (!p.controlled) p.control({ releaseOthers: true });
+    const hud = canvas.tokens.hud ?? canvas.hud?.token;
+    if (!hud) return;
+    if (hud.object === p && hud.rendered) return hud.close?.();
+    hud.bind(p);
+  }
+
+  /** Move the Token HUD (drawn in canvas coordinates under #hud) onto the standee's screen rect. */
+  _positionTokenHUD(hud) {
+    if (!this.view || !hud?.object) return;
+    // Foundry repositions the HUD on its own (canvas pan, token refresh): run ours after it.
+    if (!hud._f3dSetPosition && typeof hud.setPosition === "function") {
+      hud._f3dSetPosition = hud.setPosition;
+      hud.setPosition = (...args) => {
+        const out = hud._f3dSetPosition.apply(hud, args);
+        if (this.view) this._positionTokenHUD(hud);
+        return out;
+      };
+      this._patchedHUD = hud;
+    }
+    const rect = this.view.tokenScreenRect(hud.object.document.id);
+    const el = hud.element instanceof HTMLElement ? hud.element : hud.element?.[0];
+    if (!rect || !el || !canvas.stage) return;
+    const inv = canvas.stage.worldTransform;
+    const a = inv.applyInverse({ x: rect.x, y: rect.y });
+    const b = inv.applyInverse({ x: rect.x + rect.width, y: rect.y + rect.height });
+    Object.assign(el.style, { left: `${a.x}px`, top: `${a.y}px`, width: `${b.x - a.x}px`, height: `${b.y - a.y}px` });
+    el.dataset.f3d = "1";
   }
 
   _syncSelection() {

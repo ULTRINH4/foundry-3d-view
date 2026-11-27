@@ -308,7 +308,11 @@ async function runSelfTest() {
   r.cutawayRestores = [...view.walls.values()].every((w) => w.cut > 0.95);
 
   // 6. tiles and roofs: the roof over room C fades when a focus token stands under it
-  r.tilesBuilt = view.tiles.size === 2;
+  r.tilesBuilt = view.tiles.size === 5;
+  const tree = view.tiles.get("tree1");
+  r.modelTileBuilt = !!tree?.isModel && !!tree.mesh && tree.mesh.children.length >= 3;
+  r.modelOnRaisedGround = Math.abs(tree.group.position.y - 1) < 1e-6; // outside rock is 5 ft high
+  r.carStretchedToFootprint = Math.abs(view.tiles.get("car1").group.scale.z - 2) < 1e-6;
   view.setRoofFocus([{ x: model.grid.sceneX + 5.5 * model.grid.size, y: model.grid.sceneY + 11.5 * model.grid.size }]);
   await frames(40);
   r.roofFadesOverToken = view.tiles.get("roofC").group.visible === false;

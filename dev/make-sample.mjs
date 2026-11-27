@@ -61,6 +61,10 @@ const tiles = [
   // A rug in room A (floor tile) and a roof over room C (overhead: elevation >= foreground 20)
   { _id: "rug", x: P(4), y: P(3), width: 3 * size, height: 2 * size, rotation: 15, texture: { src: "gen:rug" }, elevation: 0, sort: 1 },
   { _id: "roofC", x: P(3), y: P(9), width: 5 * size, height: 5 * size, texture: { src: "gen:roof" }, elevation: 20, sort: 2 },
+  // 3D model tiles (built-in props)
+  { _id: "tree1", x: P(10), y: P(1), width: size, height: size, flags: { "foundry-3d-view": { model: "tree" } } },
+  { _id: "crate1", x: P(21), y: P(12), width: size, height: size, rotation: 20, flags: { "foundry-3d-view": { model: "crate" } } },
+  { _id: "car1", x: P(1), y: P(10), width: size, height: 2 * size, flags: { "foundry-3d-view": { model: "car" } } },
 ];
 
 const lights = [

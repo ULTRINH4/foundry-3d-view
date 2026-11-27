@@ -31,10 +31,10 @@
   cursor: crosshair;
 }
 
-/* Bottom centre, above the hotbar: Foundry's notifications live at the top centre. */
+/* Bottom centre, above the hotbar (two rows in v14): notifications and combat docks use the top. */
 .f3d-hud {
   position: absolute;
-  bottom: 96px;
+  bottom: 158px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;
@@ -133,4 +133,23 @@
   font: 600 13px "Signika", system-ui, sans-serif;
   white-space: nowrap;
   pointer-events: none;
+}
+
+/* Compact toolbar: icons only (names in tooltips), like Foundry's own controls. The dev page,
+   which has no icon font, adds .f3d-labels to show the names. */
+.f3d-hud .f3d-btn span {
+  display: none;
+}
+.f3d-hud .f3d-btn {
+  width: 30px;
+  justify-content: center;
+  padding: 0;
+}
+.f3d-labels .f3d-hud .f3d-btn span,
+.f3d-labels.f3d-hud .f3d-btn span {
+  display: inline;
+}
+.f3d-labels .f3d-hud .f3d-btn {
+  width: auto;
+  padding: 0 8px;
 }

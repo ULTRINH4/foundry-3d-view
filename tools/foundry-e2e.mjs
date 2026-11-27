@@ -392,6 +392,8 @@ await gm.mouse.click(pt.x, pt.y);
 await sleep(2500);
 const heroPos = await gm.evaluate((id) => ({ x: canvas.scene.tokens.get(id).x, y: canvas.scene.tokens.get(id).y }), ids.tokens.hero);
 check("click on a square moves the token in Foundry", heroPos.x === ids.sceneX + 700 && heroPos.y === ids.sceneY + 700, JSON.stringify(heroPos));
+// Right-click an empty square to release (right-click on a token opens Foundry's Token HUD).
+pt = await screenOf("cell", { col: 3, row: 6 });
 await gm.mouse.click(pt.x, pt.y, { button: "right" });
 await sleep(400);
 check("right-click releases control", await gm.evaluate(() => canvas.tokens.controlled.length === 0));
@@ -558,6 +560,26 @@ await gm.evaluate(() => game.modules.get("foundry-3d-view").api.open());
 await gm.waitForFunction(() => !!game.modules.get("foundry-3d-view").api._controller?.interaction, null, { timeout: 60000 });
 await sleep(1500);
 
+// 3D models: export the built-ins as .glb through the Tiles tool, then use one as a custom model
+const exported = await gm.evaluate(() => game.modules.get("foundry-3d-view").api.exportModels());
+check("built-in models exported as .glb files", Array.isArray(exported) && exported.length >= 10, String(exported?.length));
+const models = await gm.evaluate(async (files) => {
+  const dim = canvas.dimensions;
+  const [builtin, custom] = await canvas.scene.createEmbeddedDocuments("Tile", [
+    { x: dim.sceneX + 1000, y: dim.sceneY + 100, width: 100, height: 100, flags: { "foundry-3d-view": { model: "tree" } } },
+    { x: dim.sceneX + 1200, y: dim.sceneY + 100, width: 100, height: 100, flags: { "foundry-3d-view": { modelFile: files.find((f) => f.endsWith("crate.glb")) } } },
+  ]);
+  await new Promise((ok) => setTimeout(ok, 2500));
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  const a = v.tiles.get(builtin.id), b = v.tiles.get(custom.id);
+  const meshes = (e) => { let n = 0; e?.mesh?.traverse((o) => o.isMesh && n++); return n; };
+  const out = { builtin: !!a?.isModel && meshes(a) > 0, custom: !!b?.isModel && meshes(b) > 0 };
+  await canvas.scene.deleteEmbeddedDocuments("Tile", [builtin.id, custom.id]);
+  return out;
+}, exported ?? []);
+check("tile with a built-in 3D model rendered", models.builtin);
+check("tile with an exported .glb (custom model) loaded and rendered", models.custom);
+
 check("GM sees the hidden token as a ghost", await gm.evaluate((id) => {
   const t = game.modules.get("foundry-3d-view").api._controller.view.tokens.get(id);
   return t.group.visible && t.card.material.opacity < 1;
@@ -679,7 +701,8 @@ const locked = await pl.evaluate(async (id) => {
 check("player: locked door stays locked", locked === 2);
 await gm.evaluate((id) => canvas.scene.walls.get(id).update({ ds: 0 }), ids.corridorDoor);
 
-// Close from the HUD
+// Close from the HUD (system welcome dialogs can pop up late: close them first)
+await closePopups(pl);
 await pl.locator(".f3d-close").click();
 await sleep(500);
 check("close button removes the overlay", await pl.evaluate(() => !document.getElementById("f3d-overlay")));
