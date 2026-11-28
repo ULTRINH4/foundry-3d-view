@@ -1,6 +1,7 @@
 /**
  * Foundry 3D View fields in the Wall configuration sheet:
- *  - "3D texture": image tiled on this wall (flags.foundry-3d-view.texture)
+ *  - walls: "3D texture" (flags.foundry-3d-view.texture), its fit (repeat / wall height) and size
+ *  - doors: "3D door texture" (flags.foundry-3d-view.doorTexture) and its mode (fit / repeat)
  *  - "3D height":  height in grid squares (flags.foundry-3d-view.height), e.g. 0.5 = half wall
  * Plus a bulk tool (Walls controls) that applies texture/height to every selected wall.
  * Works with v13/v14 ApplicationV2 sheets (html is an HTMLElement, <file-picker> element) and falls
@@ -19,20 +20,48 @@ function textureField(name, value) {
     : `<input type="text" name="${name}" value="${esc(value)}" placeholder="path/to/texture.webp">`;
 }
 
+const FLAG = (k) => `flags.${MODULE_ID}.${k}`;
+
+function select(name, value, options) {
+  return `<select name="${name}">${options.map(([v, label]) => `<option value="${v}"${(value ?? "") === v ? " selected" : ""}>${esc(label)}</option>`).join("")}</select>`;
+}
+
+const fitOptions = () => [["", t("F3D.WallConfig.UseSetting")], ["repeat", t("F3D.TextureFit.repeat")], ["height", t("F3D.TextureFit.height")]];
+const doorModeOptions = () => [["", t("F3D.WallConfig.UseSetting")], ["fit", t("F3D.DoorTextureMode.fit")], ["repeat", t("F3D.DoorTextureMode.repeat")]];
+
 export function injectWallConfig(app, html) {
   const root = html instanceof HTMLElement ? html : html?.[0];
   const doc = app.document ?? app.object;
-  if (!root || !doc || root.querySelector(`[name="${TEX}"]`)) return;
+  if (!root || !doc || root.querySelector(".f3d-wall-texture")) return;
   const height = doc.getFlag(MODULE_ID, "height");
+  const isDoor = Number(doc.door) > 0;
   const fieldset = document.createElement("fieldset");
   fieldset.className = "f3d-wall-texture";
-  fieldset.innerHTML = `
-    <legend>${t("F3D.WallConfig.Legend")}</legend>
+  const textureRows = isDoor
+    ? `
+    <div class="form-group">
+      <label>${t("F3D.WallConfig.DoorTexture")}</label>
+      <div class="form-fields">${textureField(FLAG("doorTexture"), doc.getFlag(MODULE_ID, "doorTexture") ?? "")}</div>
+      <p class="hint">${t("F3D.WallConfig.DoorTextureHint")}</p>
+    </div>
+    <div class="form-group">
+      <label>${t("F3D.WallConfig.DoorTextureMode")}</label>
+      <div class="form-fields">${select(FLAG("doorTextureMode"), doc.getFlag(MODULE_ID, "doorTextureMode"), doorModeOptions())}</div>
+    </div>`
+    : `
     <div class="form-group">
       <label>${t("F3D.WallConfig.Texture")}</label>
       <div class="form-fields">${textureField(TEX, doc.getFlag(MODULE_ID, "texture") ?? "")}</div>
       <p class="hint">${t("F3D.WallConfig.TextureHint")}</p>
     </div>
+    <div class="form-group">
+      <label>${t("F3D.WallConfig.TextureFit")}</label>
+      <div class="form-fields">${select(FLAG("textureFit"), doc.getFlag(MODULE_ID, "textureFit"), fitOptions())}
+        <input type="number" name="${FLAG("textureScale")}" value="${doc.getFlag(MODULE_ID, "textureScale") ?? ""}" step="0.25" min="0.25" placeholder="${t("F3D.WallConfig.TextureScale")}"></div>
+      <p class="hint">${t("F3D.WallConfig.TextureFitHint")}</p>
+    </div>`;
+  fieldset.innerHTML = `
+    <legend>${t("F3D.WallConfig.Legend")}</legend>${textureRows}
     <div class="form-group">
       <label>${t("F3D.WallConfig.Height")}</label>
       <div class="form-fields">
@@ -58,13 +87,22 @@ export function injectWallConfig(app, html) {
 export const HEIGHT_PRESETS = Object.freeze({ keep: null, default: "", full: 2, tall: 1.5, half: 0.5, low: 0.25 });
 
 /**
- * Build the flag update for one wall from the bulk dialog values.
- * @param {{texture:string, clearTexture:boolean, preset:string, custom:string}} v
+ * Build the flag update for one wall from the bulk dialog values. Walls take the wall texture
+ * (with its fit and size), doors take the door texture: they never get each other's.
+ * @param {{texture:string, doorTexture?:string, fit?:string, scale?:string, clearTexture:boolean, preset:string, custom:string}} v
+ * @param {boolean} [isDoor]
  */
-export function bulkWallUpdate(id, v) {
+export function bulkWallUpdate(id, v, isDoor = false) {
   const u = { _id: id };
-  if (v.clearTexture) u[`flags.${MODULE_ID}.-=texture`] = null;
-  else if (v.texture) u[TEX] = v.texture;
+  if (isDoor) {
+    if (v.clearTexture) u[`flags.${MODULE_ID}.-=doorTexture`] = null;
+    else if (v.doorTexture) u[FLAG("doorTexture")] = v.doorTexture;
+  } else {
+    if (v.clearTexture) u[`flags.${MODULE_ID}.-=texture`] = null;
+    else if (v.texture) u[TEX] = v.texture;
+    if (v.fit === "repeat" || v.fit === "height") u[FLAG("textureFit")] = v.fit;
+    if (Number(v.scale) > 0) u[FLAG("textureScale")] = Number(v.scale);
+  }
   if (v.preset === "custom" && Number(v.custom) > 0) u[HEIGHT] = Number(v.custom);
   else if (v.preset === "default") u[`flags.${MODULE_ID}.-=height`] = null;
   else if (v.preset in HEIGHT_PRESETS && HEIGHT_PRESETS[v.preset] !== null && HEIGHT_PRESETS[v.preset] !== "") u[HEIGHT] = HEIGHT_PRESETS[v.preset];
@@ -82,6 +120,11 @@ export async function openBulkWallDialog() {
     <p>${game.i18n.format("F3D.WallTools.Count", { n: walls.length })}</p>
     <div class="form-group"><label>${t("F3D.WallConfig.Texture")}</label>
       <div class="form-fields">${textureField("texture", "")}</div></div>
+    <div class="form-group"><label>${t("F3D.WallConfig.TextureFit")}</label>
+      <div class="form-fields">${select("fit", "", [["", t("F3D.WallTools.Keep")], ["repeat", t("F3D.TextureFit.repeat")], ["height", t("F3D.TextureFit.height")]])}
+      <input type="number" name="scale" step="0.25" min="0.25" placeholder="${t("F3D.WallConfig.TextureScale")}"></div></div>
+    <div class="form-group"><label>${t("F3D.WallConfig.DoorTexture")}</label>
+      <div class="form-fields">${textureField("doorTexture", "")}</div></div>
     <div class="form-group"><label>${t("F3D.WallTools.ClearTexture")}</label>
       <div class="form-fields"><input type="checkbox" name="clearTexture"></div></div>
     <div class="form-group"><label>${t("F3D.WallConfig.Height")}</label>
@@ -89,6 +132,9 @@ export async function openBulkWallDialog() {
       <input type="number" name="custom" step="0.05" min="0.05" placeholder="${t("F3D.WallTools.Squares")}"></div></div>`;
   const read = (form) => ({
     texture: form.elements.texture?.value ?? "",
+    doorTexture: form.elements.doorTexture?.value ?? "",
+    fit: form.elements.fit?.value ?? "",
+    scale: form.elements.scale?.value ?? "",
     clearTexture: !!form.elements.clearTexture?.checked,
     preset: form.elements.preset?.value ?? "keep",
     custom: form.elements.custom?.value ?? "",
@@ -106,7 +152,7 @@ export async function openBulkWallDialog() {
     }).catch(() => null);
   }
   if (!values || values === "cancel") return;
-  const updates = walls.map((w) => bulkWallUpdate(w.document.id, values));
+  const updates = walls.map((w) => bulkWallUpdate(w.document.id, values, Number(w.document.door) > 0));
   await canvas.scene.updateEmbeddedDocuments("Wall", updates);
   ui.notifications.info(game.i18n.format("F3D.WallTools.Done", { n: updates.length }));
 }

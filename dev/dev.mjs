@@ -45,7 +45,23 @@ for (const tok of model.tokens) {
 
 const overlay = document.getElementById("f3d-overlay");
 let playerView = params.has("player");
-const wallArt = { "gen:brick": drawBricks(), "gen:planks": drawPlanks() };
+const wallArt = {
+  "gen:brick": drawBricks(),
+  "gen:planks": drawPlanks(),
+  // A 2:1 wall strip (baseboard and moulding) for the rectangular-texture check.
+  "gen:wide": (() => {
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = 128;
+    const g = c.getContext("2d");
+    g.fillStyle = "#8a7558";
+    g.fillRect(0, 0, 256, 128);
+    g.fillStyle = "#4b3a2a";
+    g.fillRect(0, 100, 256, 28);
+    g.fillRect(0, 0, 256, 12);
+    return c.toDataURL();
+  })(),
+};
 const wallMode = params.get("walls") ?? "map";
 const view = new View3D(overlay.querySelector(".f3d-viewport"), {
   isGM: !playerView,
@@ -397,16 +413,29 @@ async function runSelfTest() {
   // 8b. wall looks: map (default) -> texture (+ per-wall override) -> flat
   r.wallsInheritMap = view.wallMaterialKeyOf("w1") === "map";
   view.setWallStyle({ wallMode: "texture", doorTexture: "gen:planks" });
-  r.wallsTextured = view.wallMaterialKeyOf("w1") === "tex:gen:brick" && view.wallMaterialKeyOf("w15") === "tex:gen:planks";
+  r.wallsTextured = view.wallMaterialKeyOf("w1") === "tex:repeat:1:gen:brick" && view.wallMaterialKeyOf("w15") === "door:fit:gen:planks";
   const w2 = model.walls.find((w) => w.id === "w2");
   view.upsertWall({ ...w2, texture: "gen:planks" });
-  r.perWallTexture = view.wallMaterialKeyOf("w2") === "tex:gen:planks" && view.wallMaterialKeyOf("w1") === "tex:gen:brick";
+  r.perWallTexture = view.wallMaterialKeyOf("w2") === "tex:repeat:1:gen:planks" && view.wallMaterialKeyOf("w1") === "tex:repeat:1:gen:brick";
+  // a wall texture flag on a door doesn't change the door; its own door texture does
+  const w15 = model.walls.find((w) => w.id === "w15");
+  view.upsertWall({ ...w15, texture: "gen:brick" });
+  r.doorIgnoresWallTexture = view.wallMaterialKeyOf("w15") === "door:fit:gen:planks";
+  view.upsertWall({ ...w15, doorTexture: "gen:brick", doorTextureMode: "repeat" });
+  r.doorOwnTexture = view.wallMaterialKeyOf("w15") === "door:repeat:gen:brick";
+  view.upsertWall({ ...w15 });
+  // rectangular texture: the tile keeps the image's proportions (2:1 image -> twice as wide)
+  view.upsertWall({ ...w2, texture: "gen:wide", textureFit: "height" });
+  r.rectTextureKey = view.wallMaterialKeyOf("w2") === "tex:height:1:gen:wide";
   await new Promise((ok) => setTimeout(ok, 50));
   frames(2);
-  r.wallTextureLoaded = !!view.wallMaterials.get("tex:gen:brick")?.map;
+  r.wallTextureLoaded = !!view.wallMaterials.get("tex:repeat:1:gen:brick")?.map;
+  const wideP = view.wallMaterials.get("tex:height:1:gen:wide")?.userData.texUniforms?.f3dTexP.value;
+  r.rectTextureKeepsProportions = !!wideP && Math.abs(wideP.y / wideP.x - 2) < 1e-6 && wideP.z === 1;
   view.upsertWall({ ...w2 });
   view.setWallStyle({ wallMode: "flat", doorTexture: "" });
   r.wallsFlat = view.wallMaterialKeyOf("w1") === "flat" && view.wallMaterialKeyOf("w15") === "door";
+  r.defaultDoorTexture = !!view.walls.get("w15").mesh.material.map;
   view.setWallStyle({ wallMode: "map" });
   r.wallsBackToMap = view.wallMaterialKeyOf("w1") === "map" && [...view.walls.values()].filter((w) => w.instanced).length > 20;
 

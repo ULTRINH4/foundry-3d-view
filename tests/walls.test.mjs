@@ -2,8 +2,7 @@ import { describe, it, expect } from "vitest";
 import { makeGrid } from "../scripts/core/coords.mjs";
 import {
   wallData, wallBox, doorPose, doorFreeEnd, isRenderableWall, showAsDoor, isDoorOpen, wallVerticalExtent,
-  wallMaterialKey, WALL_MODES, wallKind, WALL_KIND, windowSections, glassMaterialKey,
-} from "../scripts/core/walls.mjs";
+  wallMaterialKey, WALL_MODES, wallKind, WALL_KIND, windowSections, glassMaterialKey, parseTexKey, parseDoorKey } from "../scripts/core/walls.mjs";
 import { DOOR_STATE, WALL_DOOR, WALL_SENSE } from "../scripts/core/constants.mjs";
 
 const grid = makeGrid({ size: 100, sceneX: 0, sceneY: 0, sceneWidth: 1000, sceneHeight: 1000, distance: 5 });
@@ -108,17 +107,30 @@ describe("wallMaterialKey", () => {
   it("map mode inherits the scene image, falls back to flat without one", () => {
     expect(wallMaterialKey(plain, { mode: WALL_MODES.MAP })).toBe("map");
     expect(wallMaterialKey(plain, { mode: WALL_MODES.MAP, hasMap: false })).toBe("flat");
-    expect(wallMaterialKey(door, { mode: WALL_MODES.MAP, asDoor: true })).toBe("map");
+    // doors never inherit the wall look: the module's own door
+    expect(wallMaterialKey(door, { mode: WALL_MODES.MAP, asDoor: true })).toBe("door");
   });
   it("texture mode uses the global texture, flat without one", () => {
-    expect(wallMaterialKey(plain, { mode: WALL_MODES.TEXTURE, wallTexture: "stone.png" })).toBe("tex:stone.png");
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.TEXTURE, wallTexture: "stone.png" })).toBe("tex:repeat:1:stone.png");
+    expect(wallMaterialKey(plain, { mode: WALL_MODES.TEXTURE, wallTexture: "stone.png", wallFit: "height", wallScale: 2 })).toBe("tex:height:2:stone.png");
     expect(wallMaterialKey(plain, { mode: WALL_MODES.TEXTURE })).toBe("flat");
   });
   it("per-wall texture wins, door texture applies to doors only", () => {
-    expect(wallMaterialKey(custom, { mode: WALL_MODES.FLAT })).toBe("tex:brick.webp");
-    expect(wallMaterialKey(door, { mode: WALL_MODES.FLAT, doorTexture: "wood.png", asDoor: true })).toBe("tex:wood.png");
+    expect(wallMaterialKey(custom, { mode: WALL_MODES.FLAT })).toBe("tex:repeat:1:brick.webp");
+    expect(wallMaterialKey(door, { mode: WALL_MODES.FLAT, doorTexture: "wood.png", asDoor: true })).toBe("door:fit:wood.png");
+    expect(wallMaterialKey(door, { mode: WALL_MODES.FLAT, doorTexture: "wood.png", doorMode: "repeat", asDoor: true })).toBe("door:repeat:wood.png");
     expect(wallMaterialKey(plain, { mode: WALL_MODES.FLAT, doorTexture: "wood.png" })).toBe("flat");
     expect(wallMaterialKey(door, { mode: WALL_MODES.FLAT, asDoor: true })).toBe("door");
+  });
+  it("doors and walls keep separate textures", () => {
+    const both = wallData({ _id: "d", c: [0, 0, 100, 0], door: 1, flags: { "foundry-3d-view": { texture: "brick.webp", doorTexture: "oak.png", doorTextureMode: "repeat" } } });
+    // the wall texture flag never reaches a door
+    expect(wallMaterialKey(both, { mode: WALL_MODES.TEXTURE, wallTexture: "stone.png", asDoor: true })).toBe("door:repeat:oak.png");
+    const fitted = wallData({ _id: "w", c: [0, 0, 100, 0], flags: { "foundry-3d-view": { texture: "strip.png", textureFit: "height", textureScale: 2 } } });
+    expect(wallMaterialKey(fitted, { mode: WALL_MODES.MAP })).toBe("tex:height:2:strip.png");
+    expect(parseTexKey("tex:height:2:https://x.org/a:b.png")).toEqual({ fit: "height", scale: 2, src: "https://x.org/a:b.png" });
+    expect(parseDoorKey("door:fit:oak.png")).toEqual({ mode: "fit", src: "oak.png" });
+    expect(parseTexKey("map")).toBeNull();
   });
   it("secret doors seen as doors keep their own colour", () => {
     expect(wallMaterialKey(secret, { mode: WALL_MODES.MAP, asDoor: true })).toBe("secretDoor");
@@ -161,7 +173,7 @@ describe("wall kinds, heights, windows and glass", () => {
   });
   it("material keys for windows and glass", () => {
     const win = W({ sight: WALL_SENSE.PROXIMITY });
-    expect(wallMaterialKey(win, { mode: WALL_MODES.MAP, windowTexture: "frame.png" })).toBe("tex:frame.png");
+    expect(wallMaterialKey(win, { mode: WALL_MODES.MAP, windowTexture: "frame.png" })).toBe("tex:repeat:1:frame.png");
     expect(wallMaterialKey(win, { mode: WALL_MODES.MAP })).toBe("map");
     const inv = W({ sight: WALL_SENSE.NONE });
     expect(glassMaterialKey(inv)).toBe("glass");

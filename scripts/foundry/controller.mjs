@@ -822,6 +822,8 @@ function wallStyle() {
     wallTexture: game.settings.get(MODULE_ID, "wallTexture"),
     doorTexture: game.settings.get(MODULE_ID, "doorTexture"),
     wallTextureScale: Number(game.settings.get(MODULE_ID, "wallTextureScale")) || 1,
+    wallTextureFit: game.settings.get(MODULE_ID, "wallTextureFit"),
+    doorTextureMode: game.settings.get(MODULE_ID, "doorTextureMode"),
     windowTexture: game.settings.get(MODULE_ID, "windowTexture"),
     glassTexture: game.settings.get(MODULE_ID, "glassTexture"),
     windowOpenings: game.settings.get(MODULE_ID, "windowOpenings"),

@@ -84,11 +84,11 @@ async function run() {
   r.wallsInheritMapByDefault = view.wallMaterialKeyOf("w1") === "map";
   await game.settings.set("foundry-3d-view", "wallTexture", "textures/stone.webp");
   await game.settings.set("foundry-3d-view", "wallMode", "texture");
-  r.wallModeSettingApplies = view.wallMaterialKeyOf("w1") === "tex:textures/stone.webp";
+  r.wallModeSettingApplies = view.wallMaterialKeyOf("w1") === "tex:repeat:1:textures/stone.webp";
   await canvas.scene.walls.get("w2").update({ flags: { "foundry-3d-view": { texture: "textures/brick.webp" } } });
-  r.wallFlagOverrides = view.wallMaterialKeyOf("w2") === "tex:textures/brick.webp";
+  r.wallFlagOverrides = view.wallMaterialKeyOf("w2") === "tex:repeat:1:textures/brick.webp";
   await game.settings.set("foundry-3d-view", "wallMode", "map");
-  r.wallFlagSurvivesModeChange = view.wallMaterialKeyOf("w2") === "tex:textures/brick.webp" && view.wallMaterialKeyOf("w1") === "map";
+  r.wallFlagSurvivesModeChange = view.wallMaterialKeyOf("w2") === "tex:repeat:1:textures/brick.webp" && view.wallMaterialKeyOf("w1") === "map";
 
   // Door updates through the document
   const door = canvas.scene.walls.get("w15");

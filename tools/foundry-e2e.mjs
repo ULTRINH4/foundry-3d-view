@@ -324,6 +324,31 @@ const doorSwing = await gm.evaluate(async (id) => {
   return Math.abs(after - before - Math.PI / 2) < 1e-6;
 }, ids.corridorDoor);
 check("updateWall: door swings in 3D", doorSwing === true, typeof doorSwing === "string" ? doorSwing : "");
+// Opening a door: the leaf turns 90° and rests against the wall end instead of cutting into it,
+// and the closed door has its own look (the module's wooden door), not the wall's.
+const leaf = await gm.evaluate(async (id) => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  const doc = canvas.scene.walls.get(id);
+  const e = v.walls.get(id);
+  const closedKey = e.materialKey;
+  const hasArt = !!e.mesh.material.map;
+  await doc.update({ ds: 1 });
+  await new Promise((r) => setTimeout(r, 2500));
+  e.mesh.updateWorldMatrix(true, false);
+  // Leaf corners on the ground, in canvas px
+  const g = v.grid, pts = [];
+  for (const x of [0, 1]) for (const z of [-0.5, 0.5]) {
+    const p = e.mesh.localToWorld(new e.mesh.position.constructor(x - 0.5, 0, z));
+    pts.push({ x: p.x * g.size + g.centerX, y: p.z * g.size + g.centerY });
+  }
+  await doc.update({ ds: 0 });
+  await new Promise((r) => setTimeout(r, 1500));
+  const [x1, y1, x2, y2] = doc.c;
+  // Open, the leaf stands across the wall line: its far end is about one door length away from it
+  const dist = (p) => Math.abs((y2 - y1) * p.x - (x2 - x1) * p.y + x2 * y1 - y2 * x1) / Math.hypot(x2 - x1, y2 - y1);
+  return { closedKey, hasArt, far: Math.max(...pts.map(dist)) / g.size, near: Math.min(...pts.map(dist)) / g.size };
+}, ids.corridorDoor);
+check("door has its own look (not the wall's) and opens flat against the wall end", leaf.closedKey === "door" && leaf.hasArt && leaf.far > 0.7 && leaf.near < 0.15, JSON.stringify(leaf));
 
 // Token animation: standee follows refreshToken during Foundry's movement animation
 const anim = await gm.evaluate(async (id) => {
@@ -590,9 +615,9 @@ await gm.evaluate(async (ids) => {
   await game.settings.set("foundry-3d-view", "wallMode", "texture");
 }, ids);
 await sleep(1500);
-check("wall/door texture settings apply live", (await keyOf(ids.plainWall)) === `tex:${ids.bricks}` && (await keyOf(ids.corridorDoor)) === `tex:${ids.planks}`,
+check("wall/door texture settings apply live (doors separate from walls)", (await keyOf(ids.plainWall)) === `tex:repeat:1:${ids.bricks}` && (await keyOf(ids.corridorDoor)) === `door:fit:${ids.planks}`,
   `${await keyOf(ids.plainWall)} / ${await keyOf(ids.corridorDoor)}`);
-check("wall texture loaded from Foundry", await gm.evaluate((src) => !!game.modules.get("foundry-3d-view").api._controller.view.wallMaterials.get(`tex:${src}`)?.map?.image, ids.bricks));
+check("wall texture loaded from Foundry", await gm.evaluate((src) => !!game.modules.get("foundry-3d-view").api._controller.view.wallMaterials.get(`tex:repeat:1:${src}`)?.map?.image, ids.bricks));
 await gm.evaluate(() => {
   const v = game.modules.get("foundry-3d-view").api._controller.view;
   v.setTopDown(false);
@@ -622,7 +647,7 @@ if (fieldInfo) {
   await sleep(1500);
   const flag = await gm.evaluate((id) => canvas.scene.walls.get(id).getFlag("foundry-3d-view", "texture"), ids.plainWall);
   check("saving the sheet stores the wall flag", flag === ids.planks, String(flag));
-  check("per-wall texture overrides the setting in 3D", (await keyOf(ids.plainWall)) === `tex:${ids.planks}`, await keyOf(ids.plainWall));
+  check("per-wall texture overrides the setting in 3D", (await keyOf(ids.plainWall)) === `tex:repeat:1:${ids.planks}`, await keyOf(ids.plainWall));
   await gm.evaluate((id) => canvas.scene.walls.get(id).unsetFlag("foundry-3d-view", "texture"), ids.plainWall);
 }
 await gm.evaluate(async () => {
@@ -677,20 +702,25 @@ if (await toolBtn.count()) {
   await toolBtn.first().click();
   await gm.waitForSelector('select[name="preset"]', { timeout: 10000 }).catch(() => {});
   await gm.selectOption('select[name="preset"]', "half").catch(() => {});
-  await gm.evaluate((src) => {
-    const el = document.querySelector('dialog [name="texture"], .application [name="texture"]');
-    if (el) { el.value = src; el.querySelector?.("input") && (el.querySelector("input").value = src); }
-  }, ids.bricks);
+  await gm.evaluate(({ wall, door }) => {
+    const set = (name, src) => {
+      const el = document.querySelector(`dialog [name="${name}"], .application [name="${name}"]`);
+      if (el) { el.value = src; el.querySelector?.("input") && (el.querySelector("input").value = src); }
+    };
+    set("texture", wall);
+    set("doorTexture", door);
+  }, { wall: ids.bricks, door: ids.planks });
   await gm.locator('button[data-action="apply"]').first().click().catch(() => {});
   await sleep(1500);
   const bulk = await gm.evaluate((ids) => [ids.plainWall, ids.corridorDoor].map((id) => {
     const d = canvas.scene.walls.get(id);
-    return { h: d.getFlag("foundry-3d-view", "height"), t: d.getFlag("foundry-3d-view", "texture") };
+    return { h: d.getFlag("foundry-3d-view", "height"), t: d.getFlag("foundry-3d-view", "texture"), dt: d.getFlag("foundry-3d-view", "doorTexture") };
   }), ids);
-  check("bulk tool applies height + texture to all selected walls", bulk.every((b) => b.h === 0.5 && b.t === ids.bricks), JSON.stringify(bulk));
+  check("bulk tool: height on all, wall texture on the wall, door texture on the door",
+    bulk.every((b) => b.h === 0.5) && bulk[0].t === ids.bricks && !bulk[0].dt && !bulk[1].t && bulk[1].dt === ids.planks, JSON.stringify(bulk));
   await gm.evaluate(async (ids) => {
     await canvas.scene.updateEmbeddedDocuments("Wall", [ids.plainWall, ids.corridorDoor].map((id) => ({
-      _id: id, "flags.foundry-3d-view.-=height": null, "flags.foundry-3d-view.-=texture": null,
+      _id: id, "flags.foundry-3d-view.-=height": null, "flags.foundry-3d-view.-=texture": null, "flags.foundry-3d-view.-=doorTexture": null,
     })));
     canvas.walls.releaseAll?.();
   }, ids);

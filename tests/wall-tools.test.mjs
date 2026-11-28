@@ -17,4 +17,10 @@ describe("bulk wall tool", () => {
   it("ignores a non-positive custom height", () => {
     expect(bulkWallUpdate("a", { preset: "custom", custom: "0" })).toEqual({ _id: "a" });
   });
+  it("walls get the wall texture (with fit and size), doors only the door texture", () => {
+    const v = { texture: "brick.png", doorTexture: "oak.png", fit: "height", scale: "2", preset: "keep" };
+    expect(bulkWallUpdate("w", v)).toEqual({ _id: "w", [`${F}.texture`]: "brick.png", [`${F}.textureFit`]: "height", [`${F}.textureScale`]: 2 });
+    expect(bulkWallUpdate("d", v, true)).toEqual({ _id: "d", [`${F}.doorTexture`]: "oak.png" });
+    expect(bulkWallUpdate("d", { clearTexture: true, preset: "keep" }, true)).toEqual({ _id: "d", [`${F}.-=doorTexture`]: null });
+  });
 });

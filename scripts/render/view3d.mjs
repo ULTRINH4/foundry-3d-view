@@ -11,8 +11,7 @@ import { OrbitControls } from "../../vendor/three/OrbitControls.js";
 import { makeGrid, canvasToWorld, unitsToWorldY, worldToCell, tokenCenter, cellRect, cellCenter, worldToCanvas } from "../core/coords.mjs";
 import { maxHeightUnderRect, wallBaseHeight, heightMapsEqual, normalizeHeightMap, getHeight } from "../core/heights.mjs";
 import {
-  wallBox, doorPose, isRenderableWall, isDoor, showAsDoor, wallMaterialKey, glassMaterialKey, windowSections, WALL_KIND,
-} from "../core/walls.mjs";
+  wallBox, doorPose, isRenderableWall, isDoor, showAsDoor, wallMaterialKey, glassMaterialKey, windowSections, WALL_KIND, parseTexKey, parseDoorKey } from "../core/walls.mjs";
 import { buildTerrainArrays, buildGridLines } from "../core/terrain.mjs";
 import { unlitBrightness } from "../core/lighting.mjs";
 import { createBuiltinModel, isCustomModel, loadCustomModel } from "./models.mjs";
@@ -30,6 +29,8 @@ const DEFAULTS = {
   wallThickness: 0.12,
   showGrid: true,
   isGM: false,
+  wallTextureFit: "repeat", // wall textures: "repeat" (keeps proportions) or "height" (spans the wall)
+  doorTextureMode: "fit", // door textures: "fit" (one image per leaf) or "repeat"
   cutMode: "cutaway", // walls: "up", "cutaway" (The Sims: front walls of each room sink) or "down"
   showRoofs: true,
   cutawayHeight: 0.3, // world units walls are lowered to (about 1/5 of a wall)
@@ -127,7 +128,7 @@ vec3 f3dApplyFog(vec3 c) {
 
 /* Wall UVs are computed from world position so textures tile seamlessly and "map" walls can
  * sample the scene image. f3dM is the wall's model(+instance) matrix: its X axis runs along the wall. */
-const WALL_UV_PARS = "uniform vec2 f3dMapMin;\nuniform vec2 f3dMapSize;\nuniform float f3dTile;\n";
+const WALL_UV_PARS = "uniform vec2 f3dMapMin;\nuniform vec2 f3dMapSize;\nuniform float f3dTile;\nuniform vec4 f3dTexP;\n";
 const WALL_UV_COMMON = `
     #ifdef USE_INSTANCING
       mat4 f3dM = modelMatrix * instanceMatrix;
@@ -152,12 +153,20 @@ const WALL_MAP_VERTEX = `
     vMapUv = vec2((f3dP.x - f3dMapMin.x) / f3dMapSize.x, 1.0 - (f3dP.y - f3dMapMin.y) / f3dMapSize.y);
   }
   #endif`;
-// "texture": world-space tiling (faces: along the wall x height; top: x/z).
+// "texture": tiling on the faces (along the wall x height) and the top (x/z). f3dTexP =
+// (1 / tile width, 1 / tile height, height measured from the wall's base?, u measured from the
+// object's own origin?). Tile width follows the image's proportions, so rectangular textures
+// aren't squashed; "height" fit spans the wall height; doors use their own origin so the texture
+// turns with them instead of sliding.
 const WALL_TEX_VERTEX = `
   #ifdef USE_MAP
   {${WALL_UV_COMMON}
-    if (vF3dNormal.y > 0.5) vMapUv = vF3dWorld.xz * f3dTile;
-    else vMapUv = vec2(dot(vF3dWorld.xz, f3dDir), vF3dWorld.y) * f3dTile;
+    if (vF3dNormal.y > 0.5) vMapUv = vF3dWorld.xz * f3dTexP.y;
+    else {
+      float f3dU = f3dTexP.w > 0.5 ? f3dAlong : dot(vF3dWorld.xz, f3dDir);
+      float f3dV = f3dTexP.z > 0.5 ? vF3dWorld.y - f3dO.y : vF3dWorld.y;
+      vMapUv = vec2(f3dU * f3dTexP.x, f3dV * f3dTexP.y);
+    }
   }
   #endif`;
 
@@ -557,6 +566,9 @@ export class View3D {
       windowTexture: this.options.windowTexture,
       asDoor,
       hasMap: !!this.bgTexture,
+      wallFit: this.options.wallTextureFit,
+      wallScale: this.options.wallTextureScale,
+      doorMode: this.options.doorTextureMode,
     });
     const doorMat = this._wallMaterial(key);
     const isGlass = w.kind === WALL_KIND.INVISIBLE;
@@ -566,10 +578,8 @@ export class View3D {
     if (existing && existing.door && asDoor) {
       existing.data = w;
       const pose = doorPose(w, this.grid, opts);
-      existing.door.pivot.position.set(pose.hx, pose.bottom, pose.hz);
       existing.height = pose.top - pose.bottom;
-      existing.mesh.scale.set(pose.length, existing.height * existing.cut, this.options.wallThickness * 0.7);
-      existing.mesh.position.x = pose.length / 2;
+      this._placeDoorLeaf(existing.door.pivot, existing.mesh, pose, existing.height * existing.cut);
       existing.mesh.material = doorMat;
       existing.materialKey = key;
       existing.door.target = pose.angle;
@@ -590,12 +600,10 @@ export class View3D {
     if (asDoor) {
       const pose = doorPose(w, this.grid, opts);
       const pivot = new THREE.Group();
-      pivot.position.set(pose.hx, pose.bottom, pose.hz);
       pivot.rotation.y = pose.angle;
       const mesh = new THREE.Mesh(this.boxGeometry, doorMat);
       const height = pose.top - pose.bottom;
-      mesh.scale.set(pose.length, height * cut, this.options.wallThickness * 0.7);
-      mesh.position.x = pose.length / 2;
+      this._placeDoorLeaf(pivot, mesh, pose, height * cut);
       mesh.userData.wallId = w.id;
       mesh.userData.isDoor = true;
       pivot.add(mesh);
@@ -657,6 +665,22 @@ export class View3D {
     this.walls.set(w.id, entry);
   }
 
+  /**
+   * Door leaf geometry. The leaf stops half a wall thickness short of each end (where the
+   * neighbouring walls overlap) and hinges on its face, so it neither cuts into the wall when
+   * closed nor sticks through it when it swings open: open, it rests flat against the wall end.
+   */
+  _placeDoorLeaf(pivot, mesh, pose, height) {
+    const t = this.options.wallThickness, dt = t * 0.7;
+    const len = Math.max(0.2, pose.length - t);
+    const a = pose.closedAngle;
+    const dx = Math.cos(a), dz = -Math.sin(a); // along the wall
+    const nx = Math.sin(a), nz = Math.cos(a); // the leaf's local +Z when closed
+    pivot.position.set(pose.hx + dx * (t / 2) - nx * (dt / 2), pose.bottom, pose.hz + dz * (t / 2) - nz * (dt / 2));
+    mesh.scale.set(len, height, dt);
+    mesh.position.set(len / 2, 0, dt / 2);
+  }
+
   /** The wall was deleted from the scene. */
   removeWall(id) {
     this.allWalls.delete(id);
@@ -702,11 +726,25 @@ export class View3D {
    */
   _wallMaterial(key) {
     if (key === "flat") return this.materials.wall;
-    if (key === "door") return this.materials.door;
     if (key === "secretDoor") return this.materials.secretDoor;
     let mat = this.wallMaterials.get(key);
     if (mat) return mat;
-    if (key === "map") {
+    const door = key === "door" ? { mode: "fit", src: null } : parseDoorKey(key);
+    const tex = parseTexKey(key);
+    if (door) {
+      if (door.mode === "fit") {
+        // One image stretched over each door leaf (the box's own UVs), no world-space tiling.
+        mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate");
+        if (door.src) this._loadWallTexture(key, mat, door.src, { repeat: false });
+        else mat.map = this._defaultDoorTexture();
+      } else {
+        const uniforms = { ...this.wallUniforms, f3dTexP: { value: new THREE.Vector4(1, 1, 1, 1) } };
+        mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate",
+          { key: "tex", pars: WALL_UV_PARS, uniforms, vertex: WALL_TEX_VERTEX });
+        const scale = this.options.wallTextureScale || 1;
+        this._loadWallTexture(key, mat, door.src, { onImage: (aspect) => uniforms.f3dTexP.value.set(1 / (scale * aspect), 1 / scale, 1, 1) });
+      }
+    } else if (key === "map") {
       mat = this._fogged(new THREE.MeshLambertMaterial({ map: this.bgTexture, color: 0xd8d8d8 }), "dilate",
         { key: "map", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_MAP_VERTEX });
     } else if (key === "glass" || key.startsWith("glass:")) {
@@ -715,20 +753,81 @@ export class View3D {
       mat = this._fogged(new THREE.MeshLambertMaterial({
         color: src ? 0xffffff : 0xbfe3ff, transparent: true, opacity: src ? 0.9 : 0.28,
         depthWrite: false, side: THREE.DoubleSide,
-      }), "dilate", src ? { key: "tex", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_TEX_VERTEX } : null);
-      if (src) this._loadWallTexture(key, mat, src);
-    } else {
-      const src = key.slice(4);
+      }), "dilate", src ? { key: "tex", pars: WALL_UV_PARS, uniforms: this._texUniforms("repeat", this.options.wallTextureScale), vertex: WALL_TEX_VERTEX } : null);
+      if (src) this._loadWallTexture(key, mat, src, { onImage: (aspect) => this._setTexP(mat, "repeat", this.options.wallTextureScale, aspect) });
+    } else if (tex) {
+      const uniforms = this._texUniforms(tex.fit, tex.scale);
       mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate",
-        { key: "tex", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_TEX_VERTEX });
-      this._loadWallTexture(key, mat, src);
+        { key: "tex", pars: WALL_UV_PARS, uniforms, vertex: WALL_TEX_VERTEX });
+      mat.userData.texUniforms = uniforms;
+      this._loadWallTexture(key, mat, tex.src, { onImage: (aspect) => this._setTexP(mat, tex.fit, tex.scale, aspect, uniforms) });
+    } else {
+      return this.materials.wall;
     }
     this.wallMaterials.set(key, mat);
     return mat;
   }
 
-  /** Load a tiling texture into a cached wall material. */
-  _loadWallTexture(key, mat, src) {
+  /** Per-material texture uniforms (shared map uniforms + this texture's tiling). */
+  _texUniforms(fit, scale) {
+    const u = { ...this.wallUniforms, f3dTexP: { value: new THREE.Vector4(1, 1, 0, 0) } };
+    this._setTexP(null, fit, scale, 1, u);
+    return u;
+  }
+
+  /** Tiling for an image of the given aspect (width / height): see WALL_TEX_VERTEX. */
+  _setTexP(mat, fit, scale, aspect, uniforms = mat?.userData.texUniforms) {
+    if (!uniforms) return;
+    const a = aspect > 0 ? aspect : 1;
+    if (fit === "height") {
+      const h = this.options.wallHeight || 1.5;
+      uniforms.f3dTexP.value.set(1 / (h * a), 1 / h, 1, 0);
+    } else {
+      const s = scale > 0 ? scale : 1;
+      uniforms.f3dTexP.value.set(1 / (s * a), 1 / s, 0, 0);
+    }
+  }
+
+  /** The module's own wooden door (drawn here: planks in a frame, with a handle). */
+  _defaultDoorTexture() {
+    if (this._doorTex) return this._doorTex;
+    const c = document.createElement("canvas");
+    c.width = 256;
+    c.height = 512;
+    const g = c.getContext("2d");
+    g.fillStyle = "#4a2f1b";
+    g.fillRect(0, 0, 256, 512);
+    const planks = 4, pw = (256 - 36) / planks;
+    for (let i = 0; i < planks; i++) {
+      const shade = 0x6b + ((i * 37) % 3) * 8;
+      g.fillStyle = `rgb(${shade + 20}, ${Math.round(shade * 0.66)}, ${Math.round(shade * 0.38)})`;
+      g.fillRect(18 + i * pw + 2, 18, pw - 4, 476);
+      g.strokeStyle = "rgba(40, 22, 10, 0.35)";
+      g.lineWidth = 2;
+      for (let y = 40 + i * 23; y < 490; y += 70) {
+        g.beginPath();
+        g.moveTo(18 + i * pw + 8, y);
+        g.bezierCurveTo(18 + i * pw + pw * 0.4, y + 8, 18 + i * pw + pw * 0.6, y - 8, 18 + i * pw + pw - 8, y + 4);
+        g.stroke();
+      }
+    }
+    g.fillStyle = "#3a2414"; // cross braces
+    g.fillRect(18, 120, 220, 22);
+    g.fillRect(18, 370, 220, 22);
+    g.fillStyle = "#c9a54a"; // handle
+    g.beginPath();
+    g.arc(206, 262, 11, 0, Math.PI * 2);
+    g.fill();
+    g.fillStyle = "#2a1a0e";
+    g.fillRect(203, 278, 6, 16);
+    const tex = new THREE.CanvasTexture(c);
+    tex.colorSpace = THREE.SRGBColorSpace;
+    this._doorTex = tex;
+    return tex;
+  }
+
+  /** Load a texture into a cached wall/door material (tiling unless `repeat` is false). */
+  _loadWallTexture(key, mat, src, { repeat = true, onImage = null } = {}) {
     let resolved = src;
     try {
       resolved = this.options.resolveSrc(src) ?? src;
@@ -739,8 +838,10 @@ export class View3D {
       if (this.wallMaterials.get(key) !== mat) return;
       // Tiling needs repeat wrapping; clone so a texture shared with tokens/tiles keeps clamping.
       const t = tex.clone();
-      t.wrapS = t.wrapT = THREE.RepeatWrapping;
+      t.wrapS = t.wrapT = repeat ? THREE.RepeatWrapping : THREE.ClampToEdgeWrapping;
       t.needsUpdate = true;
+      const img = t.image;
+      onImage?.((img?.videoWidth || img?.width || 1) / (img?.videoHeight || img?.height || 1));
       mat.map = t;
       mat.needsUpdate = true;
     }).catch((e) => console.warn("foundry-3d-view | wall texture failed", src, e));
@@ -961,7 +1062,9 @@ export class View3D {
   }
 
   /** Change how walls look and rebuild them. */
-  setWallStyle({ wallMode, wallTexture, doorTexture, wallTextureScale, windowTexture, glassTexture, invisibleWalls, windowOpenings, useLevelHeight } = {}) {
+  setWallStyle({ wallMode, wallTexture, doorTexture, wallTextureScale, wallTextureFit, doorTextureMode, windowTexture, glassTexture, invisibleWalls, windowOpenings, useLevelHeight } = {}) {
+    if (wallTextureFit !== undefined) this.options.wallTextureFit = wallTextureFit === "height" ? "height" : "repeat";
+    if (doorTextureMode !== undefined) this.options.doorTextureMode = doorTextureMode === "repeat" ? "repeat" : "fit";
     if (windowTexture !== undefined) this.options.windowTexture = windowTexture || "";
     if (glassTexture !== undefined) this.options.glassTexture = glassTexture || "";
     if (invisibleWalls !== undefined) this.options.invisibleWalls = invisibleWalls;
@@ -1116,7 +1219,7 @@ export class View3D {
       const b = w.box;
       _p.set(b.cx, b.bottom + w.height * w.cut, b.cz);
       _q.setFromAxisAngle(_up, b.angle);
-      _s.set(b.length + b.thickness * 1.3, 0.035, b.thickness * 1.35);
+      _s.set(b.length + b.thickness, 0.035, b.thickness * 1.15); // same length as the wall: no tips through the next wall
       _m.compose(_p, _q, _s);
       this.capMesh.setMatrixAt(i, _m);
     });

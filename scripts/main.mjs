@@ -74,6 +74,26 @@ Hooks.once("init", () => {
     range: { min: 0.25, max: 4, step: 0.25 },
     onChange: restyle,
   });
+  game.settings.register(MODULE_ID, "wallTextureFit", {
+    name: "F3D.Settings.WallTextureFit.Name",
+    hint: "F3D.Settings.WallTextureFit.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    choices: { repeat: "F3D.TextureFit.repeat", height: "F3D.TextureFit.height" },
+    default: "repeat",
+    onChange: restyle,
+  });
+  game.settings.register(MODULE_ID, "doorTextureMode", {
+    name: "F3D.Settings.DoorTextureMode.Name",
+    hint: "F3D.Settings.DoorTextureMode.Hint",
+    scope: "world",
+    config: true,
+    type: String,
+    choices: { fit: "F3D.DoorTextureMode.fit", repeat: "F3D.DoorTextureMode.repeat" },
+    default: "fit",
+    onChange: restyle,
+  });
   game.settings.register(MODULE_ID, "windowTexture", {
     name: "F3D.Settings.WindowTexture.Name",
     hint: "F3D.Settings.WindowTexture.Hint",
