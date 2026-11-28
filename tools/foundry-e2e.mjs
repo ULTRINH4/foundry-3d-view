@@ -330,19 +330,22 @@ const anim = await gm.evaluate(async (id) => {
   const v = game.modules.get("foundry-3d-view").api._controller.view;
   const doc = canvas.scene.tokens.get(id);
   const startX = v.tokens.get(id).target.x;
-  // A long explicit animation: headless browsers render few frames, so give Foundry time.
+  const tok = canvas.tokens.get(id);
+  const x0 = tok.x, size = canvas.dimensions.size;
+  // Headless Foundry runs at ~1 fps, so its own 2D animation may finish in a frame or two:
+  // check that the standee tracks the animated 2D token at every sample instead.
   const p = doc.update({ x: doc.x + 300 }, { animation: { duration: 2500 } });
   const samples = [];
   for (let i = 0; i < 30; i++) {
     await new Promise((r) => setTimeout(r, 100));
-    samples.push(v.tokens.get(id).target.x);
+    samples.push([v.tokens.get(id).target.x - startX, (tok.x - x0) / size]);
   }
   await p;
   await new Promise((r) => setTimeout(r, 1200));
   const end = v.tokens.get(id).target.x;
-  const mid = samples.some((x) => x > startX + 0.2 && x < startX + 2.8);
+  const mid = samples.every(([a, b]) => Math.abs(a - b) < 0.35) && samples.some(([a]) => a > 0.05);
   await doc.update({ x: doc.x - 300 }, { animate: false });
-  return { startX, end, mid, samples: samples.map((x) => Math.round(x * 100) / 100) };
+  return { startX, end, mid, samples: samples.map(([a, b]) => `${Math.round(a * 100) / 100}/${Math.round(b * 100) / 100}`) };
 }, ids.tokens.goblin);
 check("updateToken: standee ends on the new square", Math.abs(anim.end - anim.startX - 3) < 0.01, `start ${anim.startX} end ${anim.end}`);
 check("refreshToken: standee follows the movement animation", anim.mid, anim.samples.join(","));
@@ -385,6 +388,18 @@ await gm.mouse.click(pt.x, pt.y);
 await sleep(500);
 check("click on standee controls the Foundry token", await gm.evaluate((id) => canvas.tokens.get(id)?.controlled, ids.tokens.hero));
 check("selection ring shown", await gm.evaluate((id) => game.modules.get("foundry-3d-view").api._controller.view.tokens.get(id).ring.visible, ids.tokens.hero));
+check("selecting doesn't show the move range", await gm.evaluate(() => {
+  const c = game.modules.get("foundry-3d-view").api._controller;
+  return !c.interaction.moveMode && !c.view.moveMesh?.visible;
+}));
+// Second click on the selected token: move mode (blue squares, Move button lit)
+pt = await screenOf("token", ids.tokens.hero);
+await gm.mouse.click(pt.x, pt.y);
+await sleep(500);
+check("second click on the token turns move mode on", await gm.evaluate((id) => {
+  const c = game.modules.get("foundry-3d-view").api._controller;
+  return c.interaction.moveMode === id && c.view.moveMesh?.visible && document.querySelector('.f3d-btn[data-key="move"]')?.classList.contains("active");
+}, ids.tokens.hero));
 pt = await screenOf("cell", { col: 3, row: 3 });
 await gm.mouse.move(pt.x, pt.y);
 await gm.mouse.move(pt.x + 2, pt.y + 1);
@@ -397,6 +412,12 @@ await gm.mouse.click(pt.x, pt.y);
 await sleep(2500);
 const heroPos = await gm.evaluate((id) => ({ x: canvas.scene.tokens.get(id).x, y: canvas.scene.tokens.get(id).y }), ids.tokens.hero);
 check("click on a square moves the token in Foundry", heroPos.x === ids.sceneX + 700 && heroPos.y === ids.sceneY + 700, JSON.stringify(heroPos));
+check("move mode ends after the move", await gm.evaluate(() => !game.modules.get("foundry-3d-view").api._controller.interaction.moveMode));
+// Outside move mode a click on the floor doesn't move the token
+pt = await screenOf("cell", { col: 5, row: 7 });
+await gm.mouse.click(pt.x, pt.y);
+await sleep(1200);
+check("click on the floor outside move mode doesn't move", await gm.evaluate((id) => canvas.scene.tokens.get(id).x, ids.tokens.hero) === ids.sceneX + 700);
 // Right-click on the token opens Foundry's Token HUD at its normal size, around the standee.
 pt = await screenOf("token", ids.tokens.hero);
 await gm.mouse.click(pt.x, pt.y, { button: "right" });
@@ -791,7 +812,9 @@ const fe = await pl.evaluate(async (ids) => {
   canvas.tokens.get(ids.tokens.hero).control({ releaseOthers: true });
   await new Promise((r) => setTimeout(r, 300));
   it.refresh();
-  const out = { blue: v.moveMesh?.visible ? v.moveMesh.count : 0, red: v.attackMesh?.count ?? 0 };
+  const noRangeOnSelect = !v.moveMesh?.visible;
+  it.setMoveMode(ids.tokens.hero);
+  const out = { noRangeOnSelect, blue: v.moveMesh?.visible ? v.moveMesh.count : 0, red: v.attackMesh?.count ?? 0 };
   out.wallBlocks = !it.range?.reach?.has(12 * v.grid.cols + 7); // south of room A's wall
   it.setHovering(true);
   // Dispatched on the body like a real key press (window capture runs before Foundry's handler).
@@ -817,6 +840,9 @@ const fe = await pl.evaluate(async (ids) => {
   const warned = [];
   const orig = ui.notifications.warn.bind(ui.notifications);
   ui.notifications.warn = (m, o) => { warned.push(m); return orig(m, o); };
+  out.modeEndedAfterMove = !it.moveMode;
+  key("KeyM"); // back into move mode with the keyboard
+  out.mKey = it.moveMode === ids.tokens.hero;
   for (let i = 0; i < 14; i++) key("ArrowDown");
   for (let i = 0; i < 14; i++) key("ArrowRight");
   const before = { x: doc.x, y: doc.y };
@@ -833,13 +859,60 @@ const fe = await pl.evaluate(async (ids) => {
   it.setHovering(false);
   return out;
 }, ids);
-check("FE: selecting a token shows blue and red squares", fe.blue > 5 && fe.red > 0, JSON.stringify(fe));
+check("FE: selecting only selects; move mode shows blue and red squares", fe.noRangeOnSelect && fe.blue > 5 && fe.red > 0, JSON.stringify(fe));
+check("FE: move mode ends after walking, M turns it back on", fe.modeEndedAfterMove && fe.mKey);
 check("FE: walls limit the blue squares", fe.wallBlocks);
 check("FE: keyboard cursor moves one square", fe.cursorMoves);
 check("FE: yellow path arrow to the cursor", fe.path);
 check("FE: Enter walks the token to the cursor", fe.arrived, JSON.stringify(fe.target));
 check("FE: player can't move out of range", fe.farRefused);
 check("FE: Esc clears the range (and Foundry's menu stays closed)", fe.cleared && !fe.menuOpened, `controlled ${fe.ctlBeforeEsc}`);
+
+// Combat: the player's turn turns move mode on by itself; the blue shows what's left this turn.
+const combatId = await gm.evaluate(async (ids) => {
+  for (const c of game.combats.contents) if (c.scene?.id === canvas.scene.id) await c.delete();
+  const combat = await Combat.create({ scene: canvas.scene.id, active: true });
+  await combat.createEmbeddedDocuments("Combatant", [{ tokenId: ids.tokens.goblin, sceneId: canvas.scene.id }, { tokenId: ids.tokens.hero, sceneId: canvas.scene.id }]);
+  await combat.startCombat();
+  const idx = combat.turns.findIndex((t) => t.tokenId === ids.tokens.hero);
+  await combat.update({ turn: idx });
+  return combat.id;
+}, ids);
+const turn = await pl.evaluate(async (ids) => {
+  const c = game.modules.get("foundry-3d-view").api._controller;
+  const it = c.interaction;
+  for (let i = 0; i < 40 && it.moveMode !== ids.tokens.hero; i++) await new Promise((r) => setTimeout(r, 150));
+  const out = { auto: it.moveMode === ids.tokens.hero };
+  const max = () => Math.max(...[...(it.range?.reach.values() ?? [])].map((e) => e.cost));
+  out.fullMax = max();
+  // Walk 2 squares (cost 2) along the arrow
+  const { pathTo } = await import("/modules/foundry-3d-view/scripts/core/movement.mjs");
+  const g = c.view.grid;
+  let cell = null;
+  for (const [k, e] of it.range.reach) if (e.cost === 2) { cell = { col: k % g.cols, row: Math.floor(k / g.cols) }; break; }
+  await c._moveToken(ids.tokens.hero, cell, pathTo(g, it.range.reach, cell), 2);
+  await new Promise((r) => setTimeout(r, 2500));
+  it.setMoveMode(ids.tokens.hero);
+  out.leftMax = max();
+  out.spent = canvas.scene.tokens.get(ids.tokens.hero).getFlag("foundry-3d-view", "moveSpent")?.cost;
+  return out;
+}, ids);
+await gm.evaluate(async () => { await game.combat.nextTurn(); await game.combat.nextTurn(); });
+await sleep(1500);
+const nextTurn = await pl.evaluate(async (ids) => {
+  const it = game.modules.get("foundry-3d-view").api._controller.interaction;
+  it.setMoveMode(ids.tokens.hero);
+  return Math.max(...[...(it.range?.reach.values() ?? [])].map((e) => e.cost));
+}, ids);
+check("combat: the player's turn turns move mode on by itself", turn.auto, JSON.stringify(turn));
+check("combat: after walking 2 squares the blue shows what's left", turn.spent === 2 && turn.leftMax <= turn.fullMax - 2 + 0.01 && turn.leftMax > 0, JSON.stringify(turn));
+check("combat: the movement resets on the next turn", nextTurn > turn.leftMax, String(nextTurn));
+await gm.evaluate((id) => game.combats.get(id)?.delete(), combatId);
+await pl.evaluate(() => {
+  game.modules.get("foundry-3d-view").api._controller.interaction.setMoveMode(null);
+  canvas.tokens.releaseAll(); // back to seeing through every owned token
+});
+await sleep(800);
 check("player: can open an unlocked door from 3D", plMove.door === 1, `ds ${plMove.door}`);
 await sleep(2500);
 // The mage in the corridor now sees into room B

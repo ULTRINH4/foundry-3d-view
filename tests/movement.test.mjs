@@ -93,3 +93,27 @@ describe("helpers", () => {
     expect(Math.abs(s.dc) + Math.abs(s.dr)).toBe(1);
   });
 });
+
+describe("token footprint and turn budget", () => {
+  it("1×1 token: anchor is its own square, and back", async () => {
+    const { tokenAnchorCell, tokenPositionForCell } = await import("../scripts/core/movement.mjs");
+    const t = { x: 300, y: 400, width: 1, height: 1 };
+    expect(tokenAnchorCell(grid, t)).toEqual({ col: 3, row: 4 });
+    expect(tokenPositionForCell(grid, t, { col: 6, row: 2 })).toEqual({ x: 600, y: 200 });
+  });
+  it("2×2 token: anchor is the square under its center, round trip keeps the position", async () => {
+    const { tokenAnchorCell, tokenPositionForCell, tokenCellKeys } = await import("../scripts/core/movement.mjs");
+    const t = { x: 300, y: 400, width: 2, height: 2 };
+    const a = tokenAnchorCell(grid, t);
+    expect(a).toEqual({ col: 4, row: 5 });
+    expect(tokenPositionForCell(grid, t, a)).toEqual({ x: 300, y: 400 });
+    expect(tokenCellKeys(grid, t).sort((x, y) => x - y)).toEqual([K(3, 4), K(4, 4), K(3, 5), K(4, 5)]);
+  });
+  it("movement left this turn resets when the turn changes", async () => {
+    const { remainingMove } = await import("../scripts/core/movement.mjs");
+    expect(remainingMove(6, { key: "c:1:0", cost: 4 }, "c:1:0")).toBe(2);
+    expect(remainingMove(6, { key: "c:1:0", cost: 9 }, "c:1:0")).toBe(0);
+    expect(remainingMove(6, { key: "c:1:0", cost: 4 }, "c:1:1")).toBe(6);
+    expect(remainingMove(6, { key: "c:1:0", cost: 4 }, null)).toBe(6);
+  });
+});

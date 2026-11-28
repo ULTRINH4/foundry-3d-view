@@ -1,17 +1,20 @@
 /**
- * Pointer + keyboard interaction in the 3D view, Fire Emblem style (when not painting heights):
- *  - click a token you can control (or Enter with the cursor on it): select it; its reachable
- *    squares turn blue and the squares it can attack red
- *  - move the mouse, or the arrow keys / WASD (relative to the camera): a grid cursor moves and a
- *    yellow arrow shows the path; with the keyboard the camera follows the cursor
- *  - click or Enter on a blue square: the token walks there along the arrow
+ * Pointer + keyboard interaction in the 3D view (when not painting heights).
+ *
+ * Selecting and moving are separate:
+ *  - click a token you can control: select it (nothing else happens)
+ *  - **move mode**: click the selected token again, press M, or use the toolbar's Move button.
+ *    The reachable squares turn blue and the ones it can attack red; a grid cursor follows the
+ *    mouse, or the arrow keys / WASD (relative to the camera, which follows it); a yellow arrow
+ *    shows the path. Click or Enter on a blue square: the token walks there and move mode ends.
+ *    Esc, right-click or M leave move mode.
+ *  - outside move mode a click on the floor does nothing (no accidental moves)
  *  - click a door: open/close it; Q/E: rotate the camera
- *  - right-click on one of your tokens: Foundry's Token HUD; right-click elsewhere or Esc: cancel
+ *  - right-click on one of your tokens: Foundry's Token HUD; right-click elsewhere: release
  * Dragging still moves the camera. The adapter (Foundry or the dev page) decides what each action
  * really does.
  */
-import { canvasToCell } from "../core/coords.mjs";
-import { pathTo, cursorStep } from "../core/movement.mjs";
+import { pathTo, cursorStep, tokenAnchorCell } from "../core/movement.mjs";
 
 const KEYS = {
   ArrowUp: "up", KeyW: "up", ArrowDown: "down", KeyS: "down",
@@ -26,13 +29,14 @@ const KEYS = {
  * @param {(id:string)=>boolean} o.canControl
  * @param {(id:string, additive:boolean)=>void} o.onSelectToken
  * @param {()=>void} o.onReleaseAll
- * @param {(id:string, cell:{col:number,row:number}, path:object[]|null)=>void} o.onMoveToken
+ * @param {(id:string, cell:{col:number,row:number}, path:object[]|null, cost:number)=>void} o.onMoveToken
  * @param {(wallId:string)=>void} o.onToggleDoor
  * @param {(from:object, to:object, tokenId:string)=>string} o.measure   distance label
  * @param {(id:string)=>({reach:Map, attack:Set}|null)} [o.computeRange]  movement range of a token
  * @param {(id:string)=>boolean} [o.canMoveAnywhere]    GM: may move outside the blue squares
  * @param {()=>void} [o.onBlocked]                      a move outside the range was refused
  * @param {(id:string)=>void} [o.onTokenContext]        right-click on a token
+ * @param {(on:boolean)=>void} [o.onMoveModeChange]     move mode turned on/off (toolbar button)
  */
 export function createInteraction(view, o) {
   const canvas = view.renderer.domElement;
@@ -40,27 +44,33 @@ export function createInteraction(view, o) {
   let hovering = false;
   let range = null; // { id, reach, attack }
   let cursor = null;
+  let moveMode = null; // id of the token in move mode
 
   const g = () => view.grid;
   const tokenCell = (id) => {
     const t = view.tokens.get(id)?.data;
     if (!t || !g()) return null;
-    return canvasToCell(g(), t.x + g().size / 2, t.y + g().size / 2);
+    return tokenAnchorCell(g(), t);
   };
   const selectedId = () => o.getControlled()[0] ?? null;
+  const moving = () => (moveMode && moveMode === selectedId() ? moveMode : null);
 
-  /** Recompute the blue/red squares for the selected token. */
+  const hideCursor = () => {
+    cursor = null;
+    view.setCursor(null);
+    view.showPath(null);
+    view.showRuler(null);
+  };
+
+  /** Recompute the blue/red squares (only in move mode). */
   const refreshRange = () => {
-    const id = selectedId();
-    if (!id || !o.computeRange) {
-      range = null;
-      view.clearMoveRange();
-      return;
-    }
-    const r = o.computeRange(id);
+    if (moveMode && moveMode !== selectedId()) setMoveMode(null, { silent: false });
+    const id = moving();
+    const r = id && o.computeRange ? o.computeRange(id) : null;
     if (!r) {
       range = null;
       view.clearMoveRange();
+      if (id) updatePath();
       return;
     }
     range = { id, ...r };
@@ -68,9 +78,25 @@ export function createInteraction(view, o) {
     updatePath();
   };
 
-  /** Arrow + distance label from the selected token to the cursor. */
+  function setMoveMode(id, { silent = false } = {}) {
+    const next = id && o.canControl(id) ? id : null;
+    const changed = next !== moveMode;
+    moveMode = next;
+    if (!moveMode) {
+      range = null;
+      view.clearMoveRange();
+      hideCursor();
+    } else {
+      const c = tokenCell(moveMode);
+      if (c) setCursor(c);
+    }
+    if (changed && !silent) o.onMoveModeChange?.(!!moveMode);
+    if (moveMode) refreshRange();
+  }
+
+  /** Arrow + distance label from the token in move mode to the cursor. */
   const updatePath = () => {
-    const id = selectedId();
+    const id = moving();
     if (!id || !cursor) {
       view.showPath(null);
       view.showRuler(null);
@@ -84,7 +110,7 @@ export function createInteraction(view, o) {
     } else view.showRuler(null);
   };
 
-  const setCursor = (cell, { follow = false } = {}) => {
+  function setCursor(cell, { follow = false } = {}) {
     if (!cell) return;
     cursor = cell;
     view.setCursor(cell);
@@ -93,7 +119,7 @@ export function createInteraction(view, o) {
       view.panToCanvasPoint(gg.sceneX + (cell.col + 0.5) * gg.size, gg.sceneY + (cell.row + 0.5) * gg.size);
     }
     updatePath();
-  };
+  }
 
   const clearAll = () => {
     view.showRuler(null);
@@ -101,21 +127,23 @@ export function createInteraction(view, o) {
     view.highlightCell(null);
   };
 
-  /** Confirm on a square: move the selected token there along the arrow. */
+  /** Confirm on a square: move the token there along the arrow, then leave move mode. */
   const confirmAt = (cell) => {
-    const id = selectedId();
+    const id = moving();
     if (!id) return false;
+    const from = tokenCell(id);
+    if (from && from.col === cell.col && from.row === cell.row) return false;
     const path = range?.id === id ? pathTo(g(), range.reach, cell) : null;
+    const cost = path ? range.reach.get(cell.row * g().cols + cell.col)?.cost ?? 0 : 0;
     if (path && path.length > 1) {
-      o.onMoveToken(id, cell, path);
-    } else if (!path && (o.canMoveAnywhere?.(id) || !o.computeRange)) {
-      o.onMoveToken(id, cell, null);
+      o.onMoveToken(id, cell, path, cost);
+    } else if (!path && (o.canMoveAnywhere?.(id) || !o.computeRange || !range)) {
+      o.onMoveToken(id, cell, null, 0);
     } else if (!path) {
       o.onBlocked?.();
       return false;
     }
-    view.showPath(null);
-    view.showRuler(null);
+    setMoveMode(null);
     return true;
   };
 
@@ -140,7 +168,8 @@ export function createInteraction(view, o) {
     down = null;
     if (moved > 4) return;
     if (btn === 2) {
-      // Right-click on one of your tokens opens Foundry's Token HUD; elsewhere it cancels.
+      // In move mode right-click just leaves it. Otherwise: Token HUD on your token, else release.
+      if (moving()) return setMoveMode(null);
       const hit = view.pick(ev.clientX, ev.clientY);
       if (hit?.type === "token" && o.onTokenContext && o.canControl(hit.id)) {
         o.onTokenContext(hit.id);
@@ -154,21 +183,35 @@ export function createInteraction(view, o) {
     const hit = view.pick(ev.clientX, ev.clientY);
     if (!hit) return;
     if (hit.type === "token") {
-      if (o.canControl(hit.id)) o.onSelectToken(hit.id, ev.shiftKey);
+      if (!o.canControl(hit.id)) {
+        // An enemy standing on a square in reach: treat it as a click on that square.
+        if (moving()) {
+          const c = tokenCell(hit.id);
+          if (c) confirmAt(c);
+        }
+        return;
+      }
+      if (!ev.shiftKey && hit.id === selectedId()) {
+        // Second click on the selected token toggles move mode.
+        setMoveMode(moving() ? null : hit.id);
+        return;
+      }
+      setMoveMode(null);
+      o.onSelectToken(hit.id, ev.shiftKey);
       return;
     }
     if (hit.type === "door") {
       o.onToggleDoor(hit.id);
       return;
     }
-    if (hit.type === "cell") {
+    if (hit.type === "cell" && moving()) {
       setCursor({ col: hit.col, row: hit.row });
       confirmAt({ col: hit.col, row: hit.row });
     }
   };
 
   const onMove = (ev) => {
-    if (ev.buttons || o.isBusy()) return;
+    if (ev.buttons || o.isBusy() || !moving()) return;
     const cell = view.pickCell(ev.clientX, ev.clientY);
     if (!cell) return;
     if (cursor && cell.col === cursor.col && cell.row === cursor.row) return;
@@ -187,13 +230,20 @@ export function createInteraction(view, o) {
       take();
       const step = view.cameraMode === "tactics" ? 90 : 45;
       view.rotateBy(ev.code === "KeyQ" ? -step : step);
-      // Keep the cursor's on-screen directions consistent after the turn.
       return;
     }
+    if (ev.code === "KeyM") {
+      const id = selectedId();
+      if (!id) return;
+      take();
+      setMoveMode(moving() ? null : id);
+      return;
+    }
+    if (!moving()) return; // arrows, Enter and Esc outside move mode stay Foundry's
     const dir = KEYS[ev.code];
     if (dir) {
       take();
-      const start = cursor ?? tokenCell(selectedId()) ?? { col: Math.floor(g().cols / 2), row: Math.floor(g().rows / 2) };
+      const start = cursor ?? tokenCell(moveMode) ?? { col: Math.floor(g().cols / 2), row: Math.floor(g().rows / 2) };
       const { dc, dr } = cursorStep(dir, view.cameraYaw());
       const next = { col: Math.min(g().cols - 1, Math.max(0, start.col + dc)), row: Math.min(g().rows - 1, Math.max(0, start.row + dr)) };
       setCursor(next, { follow: true });
@@ -202,25 +252,19 @@ export function createInteraction(view, o) {
     if (ev.code === "Enter" || ev.code === "Space" || ev.code === "NumpadEnter") {
       if (!cursor) return;
       take();
-      const tok = tokenAt(cursor);
-      if (tok && tok !== selectedId() && o.canControl(tok)) o.onSelectToken(tok, false);
-      else confirmAt(cursor);
+      confirmAt(cursor);
       return;
     }
-    if (ev.code === "Escape" && selectedId()) {
+    if (ev.code === "Escape") {
       take();
-      o.onReleaseAll();
-      clearAll();
+      setMoveMode(null);
     }
   };
 
   const onEnter = () => (hovering = true);
   const onLeave = () => {
     hovering = false;
-    view.setCursor(null);
-    cursor = null;
-    view.showPath(null);
-    view.showRuler(null);
+    if (!moving()) hideCursor();
   };
 
   canvas.addEventListener("pointerdown", onDown);
@@ -231,9 +275,16 @@ export function createInteraction(view, o) {
   window.addEventListener("keydown", onKey, true);
 
   return {
-    /** Selection changed or the selected token moved: recompute the range. */
+    /** Selection changed or the token moved: recompute the range (leaves move mode if the selection changed). */
     refresh: () => refreshRange(),
     clear: clearAll,
+    /** Turn move mode on for a token (or off with null). */
+    setMoveMode: (id) => setMoveMode(id),
+    /** Toolbar button: toggle move mode for the selected token. */
+    toggleMoveMode: () => setMoveMode(moving() ? null : selectedId()),
+    get moveMode() {
+      return moving();
+    },
     get cursor() {
       return cursor;
     },

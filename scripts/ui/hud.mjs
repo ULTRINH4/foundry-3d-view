@@ -22,6 +22,7 @@ const BRUSHES = [1, 3, 5];
  * @param {(settings:object)=>void} [o.onViewSettings]  persist cutaway/roofs toggles
  * @param {{cutMode?:string, cutaway?:boolean, showRoofs?:boolean}} [o.initial]
  * @param {()=>{x:number,y:number}|null} [o.getFocus]
+ * @param {()=>void} [o.onToggleMove]   toolbar Move button (move mode for the selected token)
  * @param {()=>void} [o.onClose]
  * @param {(msg:string)=>Promise<boolean>} [o.confirm]
  */
@@ -75,6 +76,12 @@ export function createHud(root, o) {
   const facingLabel = () => `${t("F3D.HUD.Sprites")}: ${t(`F3D.HUD.Facing.${state.spriteFacing}`)}`;
   view.setSpriteFacing?.(state.spriteFacing);
   const camGroup = el("div", "f3d-group");
+  let moveBtn = null;
+  if (o.onToggleMove) {
+    moveBtn = button("fa-solid fa-shoe-prints", t("F3D.HUD.Move"), () => o.onToggleMove());
+    moveBtn.dataset.key = "move";
+    camGroup.append(moveBtn);
+  }
   camGroup.append(
     toggle("fa-solid fa-map", t("F3D.HUD.TopDown"), "topDown", (on) => view.setTopDown(on)),
     toggle("fa-solid fa-chess-board", t("F3D.HUD.Tactics"), "tactics", (on) => view.setCameraMode(on ? "tactics" : "free")),
@@ -231,6 +238,8 @@ export function createHud(root, o) {
     history,
     /** Find a toolbar button by its data-key. */
     button: (key) => bar.querySelector(`[data-key="${key}"]`),
+    /** Light up the Move button while move mode is on. */
+    setMoveActive: (on) => moveBtn?.classList.toggle("active", !!on),
     destroy: () => {
       if (onKey) window.removeEventListener("keydown", onKey, true);
       bar.remove();

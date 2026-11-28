@@ -17,8 +17,7 @@ import { createHud } from "../ui/hud.mjs";
 import { createInteraction } from "../ui/interact.mjs";
 import { EffectsBridge } from "./effects-bridge.mjs";
 import { FoundryLightSampler } from "./light-sampler.mjs";
-import { reachable, attackRing, wallBlocker, diagonalCostFor } from "../core/movement.mjs";
-import { canvasToCell } from "../core/coords.mjs";
+import { reachable, attackRing, wallBlocker, diagonalCostFor, tokenAnchorCell, tokenPositionForCell, tokenCellKeys, remainingMove } from "../core/movement.mjs";
 
 const t = (key) => game.i18n.localize(key);
 
@@ -138,6 +137,7 @@ export class Tactics3DController {
       getFocus: () => this._focusPoint(),
       onHeightsChanged: (h) => this._queueSaveHeights(h),
       onClose: () => this.close(),
+      onToggleMove: () => this.interaction?.toggleMoveMode(),
       confirm: (msg) => confirmDialog(msg),
     });
     this._addWindowToggle();
@@ -154,7 +154,8 @@ export class Tactics3DController {
       },
       onSelectToken: (id, additive) => canvas.tokens?.get(id)?.control({ releaseOthers: !additive }),
       onReleaseAll: () => canvas.tokens?.releaseAll(),
-      onMoveToken: (id, cell, path) => this._moveToken(id, cell, path),
+      onMoveToken: (id, cell, path, cost) => this._moveToken(id, cell, path, cost),
+      onMoveModeChange: (on) => this.hud?.setMoveActive(on),
       onToggleDoor: (id) => this._toggleDoor(id),
       onTokenContext: (id) => this._openTokenHUD(id),
       measure: (from, to) => this._measure(from, to),
@@ -261,15 +262,16 @@ export class Tactics3DController {
     if (!doc || !this.view?.grid) return null;
     const g = this.view.grid;
     const flags = doc.flags?.[MODULE_ID] ?? {};
-    const move = Number(flags.moveRange ?? game.settings.get(MODULE_ID, "moveRange")) || 6;
+    const full = Number(flags.moveRange ?? game.settings.get(MODULE_ID, "moveRange")) || 6;
+    // In combat: what's left of this turn's movement.
+    const move = remainingMove(full, flags.moveSpent, this._turnKey(doc));
     const atk = Number(flags.attackRange ?? game.settings.get(MODULE_ID, "attackRange"));
-    const start = canvasToCell(g, doc.x + g.size / 2, doc.y + g.size / 2);
+    const start = tokenAnchorCell(g, doc);
     if (!start) return null;
     const occupied = new Set();
     for (const other of canvas.scene.tokens) {
       if (other.id === id || other.hidden || other.disposition === doc.disposition) continue;
-      const c = canvasToCell(g, other.x + g.size / 2, other.y + g.size / 2);
-      if (c) occupied.add(c.row * g.cols + c.col);
+      for (const k of tokenCellKeys(g, other)) occupied.add(k);
     }
     const walls = Array.from(canvas.scene.walls).map(wallData);
     const step = (Number(game.settings.get(MODULE_ID, "heightStep")) || 0.5) * g.distance;
@@ -288,19 +290,21 @@ export class Tactics3DController {
    * Move a token. With a path (list of squares from the 3D arrow) it walks square by square
    * through Foundry's movement API (waypoints), so the 2D and 3D animations follow the path.
    */
-  async _moveToken(id, cell, path = null) {
+  async _moveToken(id, cell, path = null, cost = 0) {
     const p = canvas.tokens?.get(id);
     if (!p) return;
     const doc = p.document;
     if (!game.user.isGM && game.paused) return ui.notifications.warn(t("F3D.Notify.Paused"));
     const g = canvas.dimensions;
-    const x = g.sceneX + cell.col * g.size;
-    const y = g.sceneY + cell.row * g.size;
+    const grid = this.view?.grid ?? g;
+    // Cells are the square under the token's center: convert back to its top-left corner.
+    const { x, y } = tokenPositionForCell(grid, doc, cell);
     if (x === doc.x && y === doc.y) return;
     if (path && path.length > 1 && typeof doc.move === "function") {
-      const waypoints = path.slice(1).map((c) => ({ x: g.sceneX + c.col * g.size, y: g.sceneY + c.row * g.size }));
+      const waypoints = path.slice(1).map((c) => tokenPositionForCell(grid, doc, c));
       try {
         await doc.move(waypoints);
+        await this._spendMovement(doc, cost);
         return;
       } catch (e) {
         console.warn("foundry-3d-view | waypoint move failed, moving directly", e);
@@ -316,6 +320,28 @@ export class Tactics3DController {
       }
     }
     await doc.update({ x, y });
+    await this._spendMovement(doc, cost);
+  }
+
+  /** Key of the current combat turn when this token is in the combat, else null. */
+  _turnKey(doc) {
+    const combat = game.combat;
+    if (!combat?.started || (combat.scene && combat.scene.id !== canvas.scene?.id)) return null;
+    if (!combat.combatants.some((c) => (c.tokenId ?? c.token?.id) === doc.id)) return null;
+    return `${combat.id}:${combat.round}:${combat.turn}`;
+  }
+
+  /** Count the squares walked this combat turn (a token flag, so every client agrees). */
+  async _spendMovement(doc, cost) {
+    const key = this._turnKey(doc);
+    if (!key || !(cost > 0)) return;
+    const prev = doc.getFlag(MODULE_ID, "moveSpent");
+    const total = (prev?.key === key ? Number(prev.cost) || 0 : 0) + cost;
+    try {
+      await doc.setFlag(MODULE_ID, "moveSpent", { key, cost: total });
+    } catch (e) {
+      console.warn("foundry-3d-view | could not record movement", e);
+    }
   }
 
   async _toggleDoor(id) {
@@ -492,6 +518,16 @@ export class Tactics3DController {
     const id = active?.tokenId ?? active?.token?.id ?? null;
     const shown = id && this.view.tokens.get(id)?.group.visible;
     this.view.setActiveToken(shown ? id : null);
+    // A player's turn starts: select their token and turn move mode on.
+    const turnKey = active ? `${combat.id}:${combat.round}:${combat.turn}` : null;
+    if (pan && shown && !game.user.isGM && turnKey !== this._autoMoveTurn) {
+      const p = canvas.tokens?.get(id);
+      if (p?.isOwner) {
+        this._autoMoveTurn = turnKey; // once per turn, so the player can still turn it off
+        p.control({ releaseOthers: true });
+        setTimeout(() => this.interaction?.setMoveMode(id), 100);
+      }
+    }
     if (pan && shown && game.settings.get(MODULE_ID, "combatFollow")) {
       const doc = canvas.scene.tokens.get(id);
       if (doc) this.view.panToCanvasPoint(...Object.values(tokenCenter(canvas.grid, doc)));

@@ -134,5 +134,6 @@
   "F3D.HUD.Walls": "Walls",
   "F3D.HUD.WallsMode.up": "Up",
   "F3D.HUD.WallsMode.cutaway": "Cutaway",
-  "F3D.HUD.WallsMode.down": "Down"
+  "F3D.HUD.WallsMode.down": "Down",
+  "F3D.HUD.Move": "Move (M)"
 }

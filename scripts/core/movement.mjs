@@ -144,3 +144,40 @@ export function cursorStep(dir, cameraYaw) {
   if (!v) return { dc: 0, dr: 0 };
   return Math.abs(v[0]) >= Math.abs(v[1]) ? { dc: Math.sign(v[0]), dr: 0 } : { dc: 0, dr: Math.sign(v[1]) };
 }
+
+/**
+ * Square a token "stands on" for movement: the one under its center (for 2×2 tokens, whose
+ * center sits on a grid corner, the square down-right of it). Foundry positions tokens by
+ * their top-left corner, so this and `tokenPositionForCell` convert both ways.
+ */
+export function tokenAnchorCell(grid, t) {
+  const w = Number(t.width ?? 1) || 1, h = Number(t.height ?? 1) || 1;
+  const cx = Number(t.x) + (w * grid.size) / 2, cy = Number(t.y) + (h * grid.size) / 2;
+  const col = Math.floor((cx - grid.sceneX) / grid.size), row = Math.floor((cy - grid.sceneY) / grid.size);
+  if (col < 0 || row < 0 || col >= grid.cols || row >= grid.rows) return null;
+  return { col, row };
+}
+
+/** Top-left canvas position that puts the token's anchor square on `cell`. */
+export function tokenPositionForCell(grid, t, cell) {
+  const w = Math.max(1, Math.round(Number(t.width ?? 1) || 1)), h = Math.max(1, Math.round(Number(t.height ?? 1) || 1));
+  return { x: grid.sceneX + (cell.col - Math.floor(w / 2)) * grid.size, y: grid.sceneY + (cell.row - Math.floor(h / 2)) * grid.size };
+}
+
+/** Every square a token covers (keys row * cols + col). */
+export function tokenCellKeys(grid, t) {
+  const w = Math.max(1, Math.round(Number(t.width ?? 1) || 1)), h = Math.max(1, Math.round(Number(t.height ?? 1) || 1));
+  const c0 = Math.round((Number(t.x) - grid.sceneX) / grid.size), r0 = Math.round((Number(t.y) - grid.sceneY) / grid.size);
+  const out = [];
+  for (let r = r0; r < r0 + h; r++) for (let c = c0; c < c0 + w; c++) if (c >= 0 && r >= 0 && c < grid.cols && r < grid.rows) out.push(r * grid.cols + c);
+  return out;
+}
+
+/**
+ * Movement left this combat turn. `spent` is the token's record {key, cost}; it only counts
+ * when its key matches the current turn's key, so it resets by itself when the turn changes.
+ */
+export function remainingMove(range, spent, turnKey) {
+  if (!turnKey || !spent || spent.key !== turnKey) return range;
+  return Math.max(0, range - (Number(spent.cost) || 0));
+}

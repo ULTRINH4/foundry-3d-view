@@ -180,6 +180,7 @@ const hud = createHud(overlay, {
   initial: { cutMode: params.get("cut") ?? (params.has("cutaway") ? "cutaway" : "up"), showRoofs: true, cameraMode: params.get("camera") ?? "free", spriteFacing: params.get("sprites") ?? "camera" },
   getWalls: () => model.walls.filter((w) => (w.levelIndex ?? 0) === 0),
   onHeightsChanged: (h) => (model.heights = h),
+  onToggleMove: () => interaction?.toggleMoveMode(),
 });
 
 // eslint-disable-next-line prefer-const
@@ -204,6 +205,7 @@ interaction = createInteraction(view, {
   computeRange,
   canMoveAnywhere: () => !playerView,
   onBlocked: () => (document.getElementById("dev-status").textContent = "Out of range"),
+  onMoveModeChange: (on) => hud.setMoveActive(on),
   measure: (a, b) => {
     const dh = getHeight(model.heights, b.col, b.row) - getHeight(model.heights, a.col, a.row);
     return formatDistance(gridSquares(a, b, DIAGONALS.ALTERNATING_1), model.grid.distance, "ft", dh);
@@ -218,6 +220,7 @@ if (params.has("select")) {
   refreshVisibility();
 }
 if (params.has("select")) interaction.refresh();
+if (params.has("select") && params.has("hover")) interaction.setMoveMode(params.get("select"));
 if (params.has("hover")) {
   // Screenshot helper: cursor + path arrow from the selected token, e.g. ?select=hero&hover=8,7
   const [col, row] = params.get("hover").split(",").map(Number);
@@ -300,11 +303,29 @@ async function runSelfTest() {
   const heroPt = screenOf(hero.group.position.clone().add(new THREE.Vector3(0, 0.1, 0)));
   click(heroPt);
   r.clickSelectsToken = controlled.has("hero") && hero.ring.visible;
+  r.selectDoesNotShowRange = !interaction.moveMode && !view.moveMesh?.visible;
+  const heroX0 = model.tokens.find((tk) => tk.id === "hero").x;
+  click(cellScreen(7, 7));
+  r.floorClickOutsideMoveModeIgnored = model.tokens.find((tk) => tk.id === "hero").x === heroX0;
+  click(heroPt); // second click on the selected token: move mode
+  r.secondClickEntersMoveMode = interaction.moveMode === "hero" && view.moveMesh?.visible && hud.button("move").classList.contains("active");
   click(cellScreen(7, 7));
   r.clickMovesToken = model.tokens.find((tk) => tk.id === "hero").x === model.grid.sceneX + 7 * model.grid.size;
+  r.moveModeEndsAfterMove = !interaction.moveMode && !view.moveMesh?.visible && !hud.button("move").classList.contains("active");
+  await frames(40);
+  interaction.setHovering(true);
+  window.dispatchEvent(new KeyboardEvent("keydown", { code: "KeyM", key: "m", bubbles: true }));
+  r.mKeyEntersMoveMode = interaction.moveMode === "hero";
   pointer("pointermove", cellScreen(3, 3));
   r.rulerShown = view.rulerLabel.style.display === "block" && /ft/.test(view.rulerLabel.textContent);
   r.rulerLabel = view.rulerLabel.textContent;
+  window.dispatchEvent(new KeyboardEvent("keydown", { code: "Escape", key: "Escape", bubbles: true }));
+  r.escLeavesMoveModeKeepsSelection = !interaction.moveMode && controlled.has("hero");
+  hud.button("move").click();
+  r.toolbarMoveButton = interaction.moveMode === "hero";
+  click(cellScreen(7, 7), 2);
+  r.rightClickLeavesMoveMode = !interaction.moveMode && controlled.has("hero");
+  interaction.setHovering(false);
   click(cellScreen(7, 7), 2);
   r.rightClickReleases = controlled.size === 0 && !hero.ring.visible;
 
@@ -459,9 +480,11 @@ async function runSelfTest() {
   controlled.clear();
   controlled.add("hero");
   interaction.refresh();
+  interaction.setMoveMode("hero");
   r.feBlueAndRedShown = view.moveMesh?.visible && view.moveMesh.count > 10 && view.attackMesh?.count > 0;
   r.feRangeBlockedByWalls = !interaction.range.reach.has(heroCell0.row * model.grid.cols + 12); // corridor door closed / walls
   interaction.setHovering(true);
+  pointer("pointermove", cellScreen(4, 5)); // start the cursor in the middle of room A
   const key = (code) => window.dispatchEvent(new KeyboardEvent("keydown", { code, key: code, bubbles: true }));
   const cursorBefore = { ...(interaction.cursor ?? heroCell0) };
   key("ArrowRight");
@@ -492,6 +515,7 @@ async function runSelfTest() {
   controlled.clear();
   controlled.add("hero");
   interaction.refresh();
+  interaction.setMoveMode("hero");
   const xBefore = heroTok.x, yBefore = heroTok.y;
   view.setTopDown(true);
   frames(20);
