@@ -349,6 +349,17 @@ const anim = await gm.evaluate(async (id) => {
 }, ids.tokens.goblin);
 check("updateToken: standee ends on the new square", Math.abs(anim.end - anim.startX - 3) < 0.01, `start ${anim.startX} end ${anim.end}`);
 check("refreshToken: standee follows the movement animation", anim.mid, anim.samples.join(","));
+// Safety net: a 2D animation that stops short (last refreshToken at an old spot) must not leave
+// the standee behind once things settle.
+const settle = await gm.evaluate(async (id) => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  const doc = canvas.scene.tokens.get(id);
+  Hooks.callAll("refreshToken", { document: doc, x: doc.x - 300, y: doc.y, controlled: false });
+  const stale = v.tokens.get(id).data.x === doc.x - 300;
+  await new Promise((r) => setTimeout(r, 900));
+  return { stale, fixed: v.tokens.get(id).data.x === doc.x && v.tokens.get(id).data.y === doc.y };
+}, ids.tokens.goblin);
+check("standee settles on the token's real square after an interrupted animation", settle.stale && settle.fixed, JSON.stringify(settle));
 
 // Real mouse: click the hero standee to control it, click a square to move, hover ruler, right-click release
 const screenOf = (kind, arg) => gm.evaluate(({ kind, arg }) => {
@@ -495,8 +506,7 @@ check("walls down: every wall lowered, saved to client settings", await gm.evalu
   return v.cutMode === "down" && [...v.walls.values()].every((w) => w.height * w.cut <= v.options.cutawayHeight + 0.02) && game.settings.get("foundry-3d-view", "cutMode") === "down";
 }));
 await gm.locator('.f3d-btn[data-key="cutaway"]').click();
-await sleep(1500);
-check("walls up: every wall back up", await gm.evaluate(() => [...game.modules.get("foundry-3d-view").api._controller.view.walls.values()].every((w) => w.cut > 0.95)));
+check("walls up: every wall back up", await gm.waitForFunction(() => [...game.modules.get("foundry-3d-view").api._controller.view.walls.values()].every((w) => w.cut > 0.95), null, { timeout: 10000 }).then(() => true, () => false));
 await gm.locator('.f3d-btn[data-key="cutaway"]').click();
 
 // Darkness change follows Foundry
@@ -704,11 +714,11 @@ const models = await gm.evaluate(async (files) => {
   for (let i = 0; i < 40 && !(v.tiles.get(custom.id)?.mesh && v.tiles.get(builtin.id)?.isModel); i++) await new Promise((ok) => setTimeout(ok, 250));
   const a = v.tiles.get(builtin.id), b = v.tiles.get(custom.id);
   const meshes = (e) => { let n = 0; e?.mesh?.traverse((o) => o.isMesh && n++); return n; };
-  const out = { builtin: !!a?.isModel && meshes(a) > 0, custom: !!b?.isModel && meshes(b) > 0, file: custom.getFlag("foundry-3d-view", "modelFile"), customEntry: !!b, customMesh: !!b?.mesh };
+  const out = { builtin: !!a?.isModel && meshes(a) > 0, builtinEntry: !!a, builtinIsModel: !!a?.isModel, builtinMeshes: meshes(a), custom: !!b?.isModel && meshes(b) > 0, file: custom.getFlag("foundry-3d-view", "modelFile"), customEntry: !!b, customMesh: !!b?.mesh };
   await canvas.scene.deleteEmbeddedDocuments("Tile", [builtin.id, custom.id]);
   return out;
 }, exported ?? []);
-check("tile with a built-in 3D model rendered", models.builtin);
+check("tile with a built-in 3D model rendered", models.builtin, JSON.stringify(models));
 check("tile with an exported .glb (custom model) loaded and rendered", models.custom, JSON.stringify(models));
 
 check("GM sees the hidden token as a ghost", await gm.evaluate((id) => {

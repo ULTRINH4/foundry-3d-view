@@ -45,6 +45,7 @@ export function createInteraction(view, o) {
   let range = null; // { id, reach, attack }
   let cursor = null;
   let moveMode = null; // id of the token in move mode
+  let lastHeal = 0;
 
   const g = () => view.grid;
   const tokenCell = (id) => {
@@ -73,9 +74,26 @@ export function createInteraction(view, o) {
       if (id) updatePath();
       return;
     }
-    range = { id, ...r };
+    let start = null;
+    for (const [k, e] of r.reach) if (e.prev === -1) start = { col: k % g().cols, row: Math.floor(k / g().cols) };
+    range = { id, start, ...r };
     view.showMoveRange(r.reach.keys(), r.attack);
     updatePath();
+  };
+
+  /**
+   * The range must start where the token stands. If the token moved without a refresh reaching
+   * us (a missed hook, an animation still settling), recompute instead of drawing from the old
+   * square. Throttled, so a lasting mismatch can't loop.
+   */
+  const rangeIsStale = (id) => {
+    if (!range || range.id !== id || !range.start) return false;
+    const now = tokenCell(id);
+    if (!now || (now.col === range.start.col && now.row === range.start.row)) return false;
+    const t = performance.now();
+    if (t - lastHeal < 250) return false;
+    lastHeal = t;
+    return true;
   };
 
   function setMoveMode(id, { silent = false } = {}) {
@@ -102,6 +120,7 @@ export function createInteraction(view, o) {
       view.showRuler(null);
       return;
     }
+    if (rangeIsStale(id)) return refreshRange();
     const from = tokenCell(id);
     const path = range?.id === id ? pathTo(g(), range.reach, cursor) : null;
     view.showPath(path);
@@ -131,6 +150,7 @@ export function createInteraction(view, o) {
   const confirmAt = (cell) => {
     const id = moving();
     if (!id) return false;
+    if (rangeIsStale(id)) refreshRange();
     const from = tokenCell(id);
     if (from && from.col === cell.col && from.row === cell.row) return false;
     const path = range?.id === id ? pathTo(g(), range.reach, cell) : null;

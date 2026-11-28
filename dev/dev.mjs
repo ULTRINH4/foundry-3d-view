@@ -510,6 +510,20 @@ async function runSelfTest() {
   r.feWalksSquareBySquare = Array.isArray(heroEntry.queue) && heroEntry.queue.length >= 1;
   frames(60);
   r.feArrivesAtTarget = !heroEntry.queue?.length;
+  // A move the range didn't hear about (missed hook): the next hover recomputes from the new square
+  interaction.setMoveMode("hero");
+  const hc = canvasToCell(model.grid, heroTok.x + 50, heroTok.y + 50);
+  const moved = { col: hc.col - 1, row: hc.row };
+  heroTok.x -= model.grid.size;
+  view.moveToken("hero", { x: heroTok.x, y: heroTok.y }, { snap: true });
+  const staleBefore = interaction.range.start.col !== moved.col;
+  await new Promise((ok) => setTimeout(ok, 300)); // past the heal throttle
+  pointer("pointermove", cellScreen(4, 4));
+  r.staleRangeHeals = staleBefore && interaction.range.start.col === moved.col && interaction.range.start.row === moved.row;
+  interaction.setMoveMode(null);
+  heroTok.x += model.grid.size;
+  view.moveToken("hero", { x: heroTok.x, y: heroTok.y }, { snap: true });
+
   // players can't leave the blue squares
   setPlayerView(true);
   controlled.clear();

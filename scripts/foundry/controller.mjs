@@ -229,6 +229,8 @@ export class Tactics3DController {
     clearInterval(this._visTimer);
     clearInterval(this._hudTimer);
     clearInterval(this._sampleTimer);
+    for (const h of this._settle?.values() ?? []) clearTimeout(h);
+    this._settle?.clear();
     this._sampling = false;
     this.lightSampler.restoreView();
     this.lightSampler.destroy();
@@ -321,6 +323,28 @@ export class Tactics3DController {
     }
     await doc.update({ x, y });
     await this._spendMovement(doc, cost);
+  }
+
+  /**
+   * After Foundry's movement animation ends, put the standee exactly on the token's real
+   * position (an interrupted 2D animation must not leave it behind) and recompute the range of
+   * a controlled token from there.
+   */
+  _queueSettle(tok) {
+    const id = tok.document.id;
+    this._settle ??= new Map();
+    clearTimeout(this._settle.get(id));
+    this._settle.set(id, setTimeout(() => {
+      this._settle.delete(id);
+      if (!this.view) return;
+      if (tok.animationContexts?.size) return this._queueSettle(tok); // still animating
+      const doc = canvas.scene?.tokens.get(id);
+      const entry = this.view.tokens.get(id);
+      if (doc && entry && (entry.data.x !== doc.x || entry.data.y !== doc.y)) {
+        this.view.moveToken(id, { x: doc.x, y: doc.y, elevation: doc.elevation });
+      }
+      if (tok.controlled) this.interaction?.refresh();
+    }, 300));
   }
 
   /** Key of the current combat turn when this token is in the combat, else null. */
@@ -434,6 +458,7 @@ export class Tactics3DController {
       const x = Number.isFinite(tok.x) ? tok.x : tok.document.x;
       const y = Number.isFinite(tok.y) ? tok.y : tok.document.y;
       this.view.moveToken(tok.document.id, { x, y, elevation: tok.document.elevation });
+      this._queueSettle(tok);
     });
     this._on("controlToken", () => {
       this._syncSelection();
