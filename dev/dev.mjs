@@ -19,6 +19,7 @@ import { lightLevels } from "../scripts/core/lighting.mjs";
 import { reachable, attackRing, wallBlocker, diagonalCostFor } from "../scripts/core/movement.mjs";
 import { gridSquares, DIAGONALS, formatDistance } from "../scripts/core/scene-extras.mjs";
 import { canvasToWorld, canvasToCell, tokenCenter } from "../scripts/core/coords.mjs";
+import { resolveSceneStyle, LIBRARY } from "../scripts/core/library.mjs";
 
 const params = new URLSearchParams(location.search);
 const [json, lang] = await Promise.all([
@@ -73,7 +74,16 @@ const view = new View3D(overlay.querySelector(".f3d-viewport"), {
   cameraMode: params.get("camera") ?? "free",
   spriteFacing: params.get("sprites") ?? "camera",
 });
+// ?theme=<dungeon|tavern|castle|cave|village|mansion|scifi>  ?weather=<rain|snow|fog|leaves|...>
+const devTheme = params.get("theme");
+if (devTheme) {
+  const st = resolveSceneStyle({ wallMode, wallTexture: "gen:brick", doorTexture: "", windowTexture: "", glassTexture: "" }, { theme: devTheme });
+  Object.assign(view.options, { wallMode: st.wallMode, wallTexture: st.wallTexture, doorTexture: st.doorTexture, windowTexture: st.windowTexture, glassTexture: st.glassTexture });
+  view.setSky(st.sky);
+}
 await view.load(model);
+if (devTheme) view.setDust(resolveSceneStyle({}, { theme: devTheme }).dust);
+if (params.has("weather")) view.setWeather(params.get("weather"));
 
 /* --- the "Foundry" side ---------------------------------------------------------------------- */
 
@@ -570,6 +580,65 @@ async function runSelfTest() {
   interaction.refresh();
   interaction.setHovering(false);
   r.feClearedOnRelease = !view.moveMesh.visible;
+
+  // 8g. ambience: texture library (with relief), themes, wall shading, flickering torches, weather, dust
+  {
+    const lib = LIBRARY.map((e) => "f3d:" + e.id);
+    const loaded = await Promise.all(lib.map((src) => view.loadTexture(src)));
+    r.libraryTexturesDraw = loaded.every((t) => t?.image?.width > 0);
+    r.libraryNormalMaps = lib.filter((s) => !/glass|iron-gate/.test(s)).every((s) => view.libraryNormals.has(s));
+    const w1 = model.walls.find((w) => w.id === "w1"), w15 = model.walls.find((w) => w.id === "w15");
+    const st = resolveSceneStyle({ wallMode: "map", wallTexture: "", doorTexture: "", windowTexture: "", glassTexture: "" }, { theme: "dungeon" });
+    view.setWallStyle(st);
+    view.setSky(st.sky);
+    view.setDust(st.dust);
+    await new Promise((ok) => setTimeout(ok, 50));
+    frames(3);
+    r.themeAppliesWalls = view.wallMaterialKeyOf("w1") === "tex:repeat:1:f3d:wall/dungeon-stone" && view.wallMaterialKeyOf("w15") === "door:fit:f3d:door/reinforced";
+    const wallMat = view.wallMaterials.get("tex:repeat:1:f3d:wall/dungeon-stone");
+    r.wallReliefOn = !!wallMat?.map && !!wallMat?.normalMap;
+    r.themeSky = view.scene.background.getHexString() === "07070b";
+    r.themeDust = !!view.ambience.dust;
+    // see-through iron gate door
+    view.upsertWall({ ...w15, doorTexture: "f3d:door/iron-gate" });
+    await new Promise((ok) => setTimeout(ok, 30));
+    r.ironGateCutout = view.walls.get("w15").mesh.material.alphaTest > 0;
+    view.upsertWall({ ...w15 });
+    // wall shading (base AO) is a live uniform
+    view.setAmbienceOptions({ wallShading: false });
+    r.wallShadingToggles = view.fogUniforms.f3dAoOn.value === 0;
+    view.setAmbienceOptions({ wallShading: true });
+    // a torch flickers
+    const savedLights = view.lights;
+    view.setLights([{ id: "t1", x: 500, y: 500, elevation: 0, dim: 30, bright: 15, color: 0xff9933, alpha: 0.6, hidden: false, negative: false, animation: "torch" }], view.darkness);
+    view._updateLights();
+    const torch = view.lightPool.find((pl) => pl.userData.anim === "torch");
+    const seen = new Set();
+    for (let i = 0; i < 12; i++) {
+      view._loop(view._last + 60);
+      seen.add(torch?.intensity.toFixed(3));
+    }
+    r.torchFlickers = !!torch && seen.size > 3;
+    view.setLights(savedLights, view.darkness);
+    // weather
+    view.setWeather("rain");
+    const before = view.ambience.weather?.obj.geometry.attributes.position.array[1];
+    frames(3);
+    const after = view.ambience.weather?.obj.geometry.attributes.position.array[1];
+    r.weatherRainFalls = view.ambience.weatherCount > 500 && before !== after;
+    view.setWeather("snow");
+    r.weatherSnow = view.ambience.weather?.kind === "snow";
+    view.setAmbienceOptions({ weather3d: false });
+    r.weatherToggleOff = !view.ambience.weather;
+    view.setAmbienceOptions({ weather3d: true });
+    view.setWeather(null);
+    // back to the dev scene's look
+    view.setDust(false);
+    view.setSky(null);
+    view.setWallStyle({ wallMode: "map", wallTexture: "gen:brick", doorTexture: "", windowTexture: "", glassTexture: "" });
+    r.ambienceShaderErrors = view.renderer.info.programs?.filter((p) => p.diagnostics && !p.diagnostics.runnable).length ?? 0;
+    r.ambienceShadersOk = r.ambienceShaderErrors === 0;
+  }
 
   // 9. player view: fog + vision
   setPlayerView(true);

@@ -169,3 +169,11 @@
   height: 30px;
   font-size: 13px;
 }
+
+/* Texture library picker */
+.f3d-lib-btn { flex: 0 0 auto; width: 32px; min-width: 32px; padding: 0; margin-left: 4px; }
+.f3d-lib-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(112px, 1fr)); gap: 8px; max-height: 60vh; overflow-y: auto; padding: 2px; }
+.f3d-lib-item { display: flex; flex-direction: column; align-items: center; gap: 4px; height: auto; padding: 6px; line-height: 1.2; white-space: normal; }
+.f3d-lib-item img { width: 96px; height: 96px; object-fit: contain; border: none; background: #111; }
+.f3d-lib-item span { font-size: 12px; text-align: center; }
+.f3d-scene-style .form-fields file-picker { flex: 1; }

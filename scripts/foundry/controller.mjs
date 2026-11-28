@@ -17,6 +17,8 @@ import { createHud } from "../ui/hud.mjs";
 import { createInteraction } from "../ui/interact.mjs";
 import { EffectsBridge } from "./effects-bridge.mjs";
 import { FoundryLightSampler } from "./light-sampler.mjs";
+import { resolveSceneStyle } from "../core/library.mjs";
+import { sceneStyleFlags } from "./scene-config.mjs";
 import { reachable, attackRing, wallBlocker, diagonalCostFor, tokenAnchorCell, tokenPositionForCell, tokenCellKeys, remainingMove } from "../core/movement.mjs";
 
 const t = (key) => game.i18n.localize(key);
@@ -91,6 +93,7 @@ export class Tactics3DController {
       cameraMode: game.settings.get(MODULE_ID, "cameraMode"),
       spriteFacing: game.settings.get(MODULE_ID, "spriteFacing"),
       ...wallStyle(),
+      ...ambienceSettings(),
       resolveSrc,
     });
     await this._loadScene();
@@ -197,8 +200,14 @@ export class Tactics3DController {
     model.darkness = currentDarkness();
     this.model = model;
     const view = this.view;
+    // This scene's look (its theme / picks over the world settings), before the walls are built.
+    const style = wallStyle();
+    for (const k of STYLE_OPTION_KEYS) if (style[k] !== undefined) view.options[k] = style[k];
+    view.setSky(style.sky);
     await view.load(model);
     if (this.view !== view) return; // closed (or reopened) while loading
+    view.setDust(style.dust);
+    view.setWeather(canvas.scene.weather);
     this.syncVisibility(true);
     this._updateFog();
     this._syncSelection();
@@ -219,7 +228,11 @@ export class Tactics3DController {
 
   /** Re-read the wall look settings and rebuild the walls (settings onChange). */
   applyWallStyle() {
-    this.view?.setWallStyle(wallStyle());
+    if (!this.view) return;
+    const style = wallStyle();
+    this.view.setWallStyle(style);
+    this.view.setSky(style.sky);
+    this.view.setDust(style.dust);
   }
 
   close() {
@@ -506,6 +519,10 @@ export class Tactics3DController {
       }
       if (foundry.utils.hasProperty(changes, "environment") || "darkness" in changes) this._refreshDarkness();
       if ("tokenVision" in changes) this._queueFog();
+      // The scene's 3D theme / texture picks, and Foundry's weather
+      const flags = changes.flags?.[MODULE_ID] ?? {};
+      if ("style" in flags || "-=style" in flags) this.applyWallStyle();
+      if ("weather" in changes) this.view.setWeather(doc.weather);
     });
 
     // Scene switched or redrawn (grid/background/dimension changes trigger a redraw).
@@ -816,7 +833,25 @@ export class Tactics3DController {
 }
 
 /** Wall look from the module settings. */
+/** View options that come from the (scene-resolved) wall style. */
+const STYLE_OPTION_KEYS = ["wallMode", "wallTexture", "doorTexture", "windowTexture", "glassTexture", "wallTextureScale", "wallTextureFit", "doorTextureMode"];
+
+/** Client ambience toggles. */
+export function ambienceSettings() {
+  return {
+    wallShading: game.settings.get(MODULE_ID, "wallShading"),
+    lightFlicker: game.settings.get(MODULE_ID, "lightFlicker"),
+    weather3d: game.settings.get(MODULE_ID, "weather3d"),
+    dust3d: game.settings.get(MODULE_ID, "dust3d"),
+  };
+}
+
+/** World wall settings, overridden by the current scene's theme and picks. */
 function wallStyle() {
+  return resolveSceneStyle(worldWallStyle(), sceneStyleFlags(canvas?.scene));
+}
+
+function worldWallStyle() {
   return {
     wallMode: game.settings.get(MODULE_ID, "wallMode"),
     wallTexture: game.settings.get(MODULE_ID, "wallTexture"),
@@ -863,7 +898,7 @@ function sightRadiusPx(doc) {
 /** Foundry stores paths relative to the data folder; make them loadable by three.js. */
 export function resolveSrc(src) {
   if (!src || typeof src !== "string") return src;
-  if (/^(https?:|data:|blob:|\/)/i.test(src)) return src;
+  if (/^(https?:|data:|blob:|\/|f3d:)/i.test(src)) return src; // f3d: = the module's texture library
   const route = foundry.utils?.getRoute;
   return route ? route(src) : `/${src}`;
 }

@@ -8,6 +8,7 @@
  * back to plain inputs on older sheets (html is jQuery).
  */
 import { MODULE_ID } from "../core/constants.mjs";
+import { libraryButton } from "./library-picker.mjs";
 
 const TEX = `flags.${MODULE_ID}.texture`;
 const HEIGHT = `flags.${MODULE_ID}.height`;
@@ -41,7 +42,7 @@ export function injectWallConfig(app, html) {
     ? `
     <div class="form-group">
       <label>${t("F3D.WallConfig.DoorTexture")}</label>
-      <div class="form-fields">${textureField(FLAG("doorTexture"), doc.getFlag(MODULE_ID, "doorTexture") ?? "")}</div>
+      <div class="form-fields">${textureField(FLAG("doorTexture"), doc.getFlag(MODULE_ID, "doorTexture") ?? "")}${libraryButton(FLAG("doorTexture"), "door")}</div>
       <p class="hint">${t("F3D.WallConfig.DoorTextureHint")}</p>
     </div>
     <div class="form-group">
@@ -51,7 +52,7 @@ export function injectWallConfig(app, html) {
     : `
     <div class="form-group">
       <label>${t("F3D.WallConfig.Texture")}</label>
-      <div class="form-fields">${textureField(TEX, doc.getFlag(MODULE_ID, "texture") ?? "")}</div>
+      <div class="form-fields">${textureField(TEX, doc.getFlag(MODULE_ID, "texture") ?? "")}${libraryButton(TEX, "wall")}</div>
       <p class="hint">${t("F3D.WallConfig.TextureHint")}</p>
     </div>
     <div class="form-group">
@@ -119,12 +120,12 @@ export async function openBulkWallDialog() {
   const content = `
     <p>${game.i18n.format("F3D.WallTools.Count", { n: walls.length })}</p>
     <div class="form-group"><label>${t("F3D.WallConfig.Texture")}</label>
-      <div class="form-fields">${textureField("texture", "")}</div></div>
+      <div class="form-fields">${textureField("texture", "")}${libraryButton("texture", "wall")}</div></div>
     <div class="form-group"><label>${t("F3D.WallConfig.TextureFit")}</label>
       <div class="form-fields">${select("fit", "", [["", t("F3D.WallTools.Keep")], ["repeat", t("F3D.TextureFit.repeat")], ["height", t("F3D.TextureFit.height")]])}
       <input type="number" name="scale" step="0.25" min="0.25" placeholder="${t("F3D.WallConfig.TextureScale")}"></div></div>
     <div class="form-group"><label>${t("F3D.WallConfig.DoorTexture")}</label>
-      <div class="form-fields">${textureField("doorTexture", "")}</div></div>
+      <div class="form-fields">${textureField("doorTexture", "")}${libraryButton("doorTexture", "door")}</div></div>
     <div class="form-group"><label>${t("F3D.WallTools.ClearTexture")}</label>
       <div class="form-fields"><input type="checkbox" name="clearTexture"></div></div>
     <div class="form-group"><label>${t("F3D.WallConfig.Height")}</label>

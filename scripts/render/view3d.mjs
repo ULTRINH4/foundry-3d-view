@@ -17,6 +17,9 @@ import { unlitBrightness } from "../core/lighting.mjs";
 import { createBuiltinModel, isCustomModel, loadCustomModel } from "./models.mjs";
 import { FOG } from "../core/vision.mjs";
 import { CUT_MODES, normalizeCutMode, indoorMap, wallCutDecision, occludingWalls } from "../core/cutaway.mjs";
+import { isLibrarySrc, libraryEntry, flickerFactor } from "../core/library.mjs";
+import { drawLibraryTexture } from "./texture-library.mjs";
+import { Ambience } from "./ambience.mjs";
 import {
   SPRITE_FACING, tokenFacingYaw, directionRow, animationColumn, sheetCellUV, snapTacticsYaw,
 } from "../core/sprites.mjs";
@@ -29,6 +32,10 @@ const DEFAULTS = {
   wallThickness: 0.12,
   showGrid: true,
   isGM: false,
+  wallShading: true, // darker band at the base of walls (cheap ambient occlusion)
+  lightFlicker: true, // lights animated as torches/flames in Foundry flicker in 3D too
+  weather3d: true, // Foundry scene weather as 3D particles
+  dust3d: true, // dust in the air when the scene's theme asks for it
   wallTextureFit: "repeat", // wall textures: "repeat" (keeps proportions) or "height" (spans the wall)
   doorTextureMode: "fit", // door textures: "fit" (one image per leaf) or "repeat"
   cutMode: "cutaway", // walls: "up", "cutaway" (The Sims: front walls of each room sink) or "down"
@@ -167,6 +174,9 @@ const WALL_TEX_VERTEX = `
       float f3dV = f3dTexP.z > 0.5 ? vF3dWorld.y - f3dO.y : vF3dWorld.y;
       vMapUv = vec2(f3dU * f3dTexP.x, f3dV * f3dTexP.y);
     }
+    #ifdef USE_NORMALMAP
+      vNormalMapUv = vMapUv;
+    #endif
   }
   #endif`;
 
@@ -252,11 +262,12 @@ export class View3D {
       f3dFogOn: { value: 0 },
       f3dFogMin: { value: new THREE.Vector2() },
       f3dFogSize: { value: new THREE.Vector2(1, 1) },
+      f3dAoOn: { value: this.options.wallShading === false ? 0 : 1 },
     };
 
     this.materials = {
-      wall: this._fogged(new THREE.MeshLambertMaterial({ color: 0x8a8580, vertexColors: true }), "dilate"),
-      door: this._fogged(new THREE.MeshLambertMaterial({ color: 0x8b5a2b }), "dilate"),
+      wall: this._fogged(new THREE.MeshLambertMaterial({ color: 0x8a8580, vertexColors: true }), "dilate", { key: "flat", ao: true }),
+      door: this._fogged(new THREE.MeshLambertMaterial({ color: 0x8b5a2b }), "dilate", { key: "flat", ao: true }),
       secretDoor: this._fogged(new THREE.MeshLambertMaterial({ color: 0x7d6a8c }), "dilate"),
       gridLine: this._fogged(new THREE.LineBasicMaterial({ color: 0x000000, transparent: true, opacity: 0.25 })),
       hover: new THREE.LineBasicMaterial({ color: 0xffe066 }),
@@ -294,6 +305,9 @@ export class View3D {
     this._resizeObserver.observe(container);
     this.resize();
 
+    this.ambience = new Ambience(this);
+    this.libraryNormals = new Map();
+
     this._last = performance.now();
     this._loop = this._loop.bind(this);
     this.renderer.setAnimationLoop(this._loop);
@@ -323,14 +337,28 @@ export class View3D {
         ${extra?.vertex ?? ""}`,
       );
       if (extra?.pars) shader.vertexShader = extra.pars + shader.vertexShader;
-      shader.fragmentShader = FOG_FRAGMENT_PARS + shader.fragmentShader.replace(
+      if (extra?.ao) {
+        // Height above the object's own base (walls, doors), for a darker band near the floor.
+        shader.vertexShader = "varying float vF3dBaseH;\nvarying float vF3dSide;\n" + shader.vertexShader.replace(
+          "#include <project_vertex>",
+          `#include <project_vertex>
+          #ifdef USE_INSTANCING
+            vF3dBaseH = (modelMatrix * instanceMatrix * vec4(transformed, 1.0)).y - (modelMatrix * instanceMatrix)[3].y;
+          #else
+            vF3dBaseH = (modelMatrix * vec4(transformed, 1.0)).y - modelMatrix[3].y;
+          #endif
+          vF3dSide = abs(objectNormal.y) < 0.5 ? 1.0 : 0.0;`,
+        );
+      }
+      shader.fragmentShader = (extra?.ao ? "varying float vF3dBaseH;\nvarying float vF3dSide;\nuniform float f3dAoOn;\n" : "") + FOG_FRAGMENT_PARS + shader.fragmentShader.replace(
         "#include <opaque_fragment>",
         "#include <opaque_fragment>\n" +
+          (extra?.ao ? "  gl_FragColor.rgb *= mix(1.0, mix(0.52, 1.0, smoothstep(0.0, 0.5, vF3dBaseH)), vF3dSide * f3dAoOn);\n" : "") +
           (hideUnseen ? `  if (f3dFogOn > 0.5 && ${hideUnseen === "dilate" ? "f3dFogCellDilated" : "f3dFogCell"}() < 0.04) discard;\n` : "") +
           "  gl_FragColor.rgb = f3dApplyFog(f3dApplyLight(gl_FragColor.rgb));",
       );
     };
-    material.customProgramCacheKey = () => `f3d-fog-${hideUnseen || "show"}-${extra?.key ?? ""}`;
+    material.customProgramCacheKey = () => `f3d-fog-${hideUnseen || "show"}-${extra?.key ?? ""}${extra?.ao ? "-ao" : ""}`;
     return material;
   }
 
@@ -345,7 +373,7 @@ export class View3D {
     this.grid = model.grid.cols !== undefined ? model.grid : makeGrid(model.grid);
     this.heights = normalizeHeightMap(model.heights, this.grid.cols, this.grid.rows);
     // Foundry's default scene colour is a light grey: darken it so the 3D "sky" stays unobtrusive.
-    this.scene.background = new THREE.Color(model.backgroundColor ?? "#1b1b1f").multiplyScalar(0.08);
+    this.scene.background = this._sky ? new THREE.Color(this._sky) : new THREE.Color(model.backgroundColor ?? "#1b1b1f").multiplyScalar(0.08);
     const g = this.grid;
 
     // Fog texture sized to the grid.
@@ -734,19 +762,28 @@ export class View3D {
     if (door) {
       if (door.mode === "fit") {
         // One image stretched over each door leaf (the box's own UVs), no world-space tiling.
-        mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate");
-        if (door.src) this._loadWallTexture(key, mat, door.src, { repeat: false });
-        else mat.map = this._defaultDoorTexture();
+        mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate", { key: "door", ao: true });
+        const src = door.src || "f3d:door/wood"; // the module's wooden door by default
+        if (libraryEntry(src)?.alpha) {
+          // See-through doors (iron gate): cut out, visible from both sides
+          mat.alphaTest = 0.5;
+          mat.side = THREE.DoubleSide;
+        }
+        this._loadWallTexture(key, mat, src, { repeat: false });
       } else {
         const uniforms = { ...this.wallUniforms, f3dTexP: { value: new THREE.Vector4(1, 1, 1, 1) } };
         mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate",
-          { key: "tex", pars: WALL_UV_PARS, uniforms, vertex: WALL_TEX_VERTEX });
+          { key: "tex", pars: WALL_UV_PARS, uniforms, vertex: WALL_TEX_VERTEX, ao: true });
+        if (libraryEntry(door.src)?.alpha) {
+          mat.alphaTest = 0.5;
+          mat.side = THREE.DoubleSide;
+        }
         const scale = this.options.wallTextureScale || 1;
         this._loadWallTexture(key, mat, door.src, { onImage: (aspect) => uniforms.f3dTexP.value.set(1 / (scale * aspect), 1 / scale, 1, 1) });
       }
     } else if (key === "map") {
       mat = this._fogged(new THREE.MeshLambertMaterial({ map: this.bgTexture, color: 0xd8d8d8 }), "dilate",
-        { key: "map", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_MAP_VERTEX });
+        { key: "map", pars: WALL_UV_PARS, uniforms: this.wallUniforms, vertex: WALL_MAP_VERTEX, ao: true });
     } else if (key === "glass" || key.startsWith("glass:")) {
       // See-through panels (invisible walls, window panes). A texture keeps its own alpha.
       const src = key.startsWith("glass:") ? key.slice(6) : null;
@@ -758,7 +795,7 @@ export class View3D {
     } else if (tex) {
       const uniforms = this._texUniforms(tex.fit, tex.scale);
       mat = this._fogged(new THREE.MeshLambertMaterial({ color: 0xffffff }), "dilate",
-        { key: "tex", pars: WALL_UV_PARS, uniforms, vertex: WALL_TEX_VERTEX });
+        { key: "tex", pars: WALL_UV_PARS, uniforms, vertex: WALL_TEX_VERTEX, ao: true });
       mat.userData.texUniforms = uniforms;
       this._loadWallTexture(key, mat, tex.src, { onImage: (aspect) => this._setTexP(mat, tex.fit, tex.scale, aspect, uniforms) });
     } else {
@@ -788,51 +825,15 @@ export class View3D {
     }
   }
 
-  /** The module's own wooden door (drawn here: planks in a frame, with a handle). */
-  _defaultDoorTexture() {
-    if (this._doorTex) return this._doorTex;
-    const c = document.createElement("canvas");
-    c.width = 256;
-    c.height = 512;
-    const g = c.getContext("2d");
-    g.fillStyle = "#4a2f1b";
-    g.fillRect(0, 0, 256, 512);
-    const planks = 4, pw = (256 - 36) / planks;
-    for (let i = 0; i < planks; i++) {
-      const shade = 0x6b + ((i * 37) % 3) * 8;
-      g.fillStyle = `rgb(${shade + 20}, ${Math.round(shade * 0.66)}, ${Math.round(shade * 0.38)})`;
-      g.fillRect(18 + i * pw + 2, 18, pw - 4, 476);
-      g.strokeStyle = "rgba(40, 22, 10, 0.35)";
-      g.lineWidth = 2;
-      for (let y = 40 + i * 23; y < 490; y += 70) {
-        g.beginPath();
-        g.moveTo(18 + i * pw + 8, y);
-        g.bezierCurveTo(18 + i * pw + pw * 0.4, y + 8, 18 + i * pw + pw * 0.6, y - 8, 18 + i * pw + pw - 8, y + 4);
-        g.stroke();
-      }
-    }
-    g.fillStyle = "#3a2414"; // cross braces
-    g.fillRect(18, 120, 220, 22);
-    g.fillRect(18, 370, 220, 22);
-    g.fillStyle = "#c9a54a"; // handle
-    g.beginPath();
-    g.arc(206, 262, 11, 0, Math.PI * 2);
-    g.fill();
-    g.fillStyle = "#2a1a0e";
-    g.fillRect(203, 278, 6, 16);
-    const tex = new THREE.CanvasTexture(c);
-    tex.colorSpace = THREE.SRGBColorSpace;
-    this._doorTex = tex;
-    return tex;
-  }
-
   /** Load a texture into a cached wall/door material (tiling unless `repeat` is false). */
   _loadWallTexture(key, mat, src, { repeat = true, onImage = null } = {}) {
     let resolved = src;
-    try {
-      resolved = this.options.resolveSrc(src) ?? src;
-    } catch {
-      /* keep the raw path */
+    if (!isLibrarySrc(src)) {
+      try {
+        resolved = this.options.resolveSrc(src) ?? src;
+      } catch {
+        /* keep the raw path */
+      }
     }
     this.loadTexture(resolved).then((tex) => {
       if (this.wallMaterials.get(key) !== mat) return;
@@ -843,6 +844,14 @@ export class View3D {
       const img = t.image;
       onImage?.((img?.videoWidth || img?.width || 1) / (img?.videoHeight || img?.height || 1));
       mat.map = t;
+      // Library textures come with relief (a normal map), lit by the 3D lights.
+      const n = this.libraryNormals.get(resolved);
+      if (n) {
+        const nt = n.clone();
+        nt.wrapS = nt.wrapT = t.wrapS;
+        nt.needsUpdate = true;
+        mat.normalMap = nt;
+      }
       mat.needsUpdate = true;
     }).catch((e) => console.warn("foundry-3d-view | wall texture failed", src, e));
   }
@@ -1706,6 +1715,9 @@ export class View3D {
       pl.distance = Math.max(l.dim, l.bright) / g.distance + 0.5;
       pl.decay = 1;
       pl.intensity = strength * (0.6 + Math.min(1, l.alpha ?? 0.5));
+      pl.userData.base = pl.intensity;
+      pl.userData.anim = l.animation ?? null;
+      pl.userData.seed = i * 3.7;
     });
   }
 
@@ -1747,6 +1759,21 @@ export class View3D {
       return p;
     }
     if (this.textureCache.has(src)) return this.textureCache.get(src);
+    if (isLibrarySrc(src)) {
+      // Built-in library texture: drawn in code, with its normal map kept aside.
+      const drawn = drawLibraryTexture(src);
+      const tex = new THREE.CanvasTexture(drawn.color);
+      tex.colorSpace = THREE.SRGBColorSpace;
+      tex.anisotropy = this.renderer.capabilities.getMaxAnisotropy();
+      if (drawn.normal) {
+        const n = new THREE.CanvasTexture(drawn.normal);
+        n.colorSpace = THREE.NoColorSpace;
+        this.libraryNormals.set(src, n);
+      }
+      const lp = Promise.resolve(tex);
+      this.textureCache.set(src, lp);
+      return lp;
+    }
     const p = /\.(webm|mp4|m4v|ogv)(\?|$)/i.test(src) ? this._loadVideoTexture(src) : new THREE.TextureLoader().loadAsync(src);
     const done = p.then((tex) => {
       tex.colorSpace = THREE.SRGBColorSpace;
@@ -2119,6 +2146,12 @@ export class View3D {
     const target = this.controls.target;
     const cam = this.camera.position;
     this._time = (this._time ?? 0) + dt;
+    if (this.options.lightFlicker !== false) {
+      for (const pl of this.lightPool) {
+        if (pl.userData.anim && pl.userData.base) pl.intensity = pl.userData.base * flickerFactor(pl.userData.anim, this._time, pl.userData.seed);
+      }
+    }
+    this.ambience?.update(dt, this._time);
     try {
       this.onFrame?.(dt);
     } catch (e) {
@@ -2232,8 +2265,52 @@ export class View3D {
     this.renderer.render(this.scene, this.camera);
   }
 
+  /* ---------------------------------------------------------------------------------------- */
+  /* Ambience                                                                                 */
+  /* ---------------------------------------------------------------------------------------- */
+
+  /** Background colour of the 3D "sky" (a theme's), or null for the scene's own (darkened). */
+  setSky(color) {
+    this._sky = color || null;
+    const base = this.model?.backgroundColor ?? "#1b1b1f";
+    this.scene.background = this._sky ? new THREE.Color(this._sky) : new THREE.Color(base).multiplyScalar(0.08);
+  }
+
+  /** Foundry scene weather id, or null. Ignored when the weather client setting is off. */
+  setWeather(id) {
+    this._weatherId = id || null;
+    this.ambience.setWeather(this.options.weather3d !== false ? this._weatherId : null);
+  }
+
+  /** Dust in the air (from the scene's theme). Ignored when the dust client setting is off. */
+  setDust(on) {
+    this._dustOn = !!on;
+    this.ambience.setDust(this.options.dust3d !== false && this._dustOn);
+  }
+
+  /** Client toggles: wallShading, lightFlicker, weather3d, dust3d. */
+  setAmbienceOptions({ wallShading, lightFlicker, weather3d, dust3d } = {}) {
+    if (wallShading !== undefined) {
+      this.options.wallShading = !!wallShading;
+      this.fogUniforms.f3dAoOn.value = wallShading ? 1 : 0;
+    }
+    if (lightFlicker !== undefined) {
+      this.options.lightFlicker = !!lightFlicker;
+      if (!lightFlicker) for (const pl of this.lightPool) if (pl.userData.base) pl.intensity = pl.userData.base;
+    }
+    if (weather3d !== undefined) {
+      this.options.weather3d = !!weather3d;
+      this.setWeather(this._weatherId);
+    }
+    if (dust3d !== undefined) {
+      this.options.dust3d = !!dust3d;
+      this.setDust(this._dustOn);
+    }
+  }
+
   dispose() {
     this._disposed = true;
+    this.ambience?.destroy();
     for (const id of [...this.effects.keys()]) this.removeEffect(id);
     this.onFrame = null;
     this.renderer.setAnimationLoop(null);

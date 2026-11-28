@@ -4,6 +4,8 @@
 import { MODULE_ID } from "./core/constants.mjs";
 import { Tactics3DController } from "./foundry/controller.mjs";
 import { injectWallConfig, openBulkWallDialog } from "./foundry/wall-config.mjs";
+import { installLibraryButtons, injectSettingsButtons } from "./foundry/library-picker.mjs";
+import { injectSceneConfig } from "./foundry/scene-config.mjs";
 import { injectTokenConfig } from "./foundry/token-config.mjs";
 import { injectTileConfig, exportModelsToData } from "./foundry/tile-config.mjs";
 
@@ -74,6 +76,18 @@ Hooks.once("init", () => {
     range: { min: 0.25, max: 4, step: 0.25 },
     onChange: restyle,
   });
+  // Ambience (per client, for performance)
+  for (const [key, def] of [["wallShading", true], ["lightFlicker", true], ["weather3d", true], ["dust3d", true]]) {
+    game.settings.register(MODULE_ID, key, {
+      name: `F3D.Settings.${key}.Name`,
+      hint: `F3D.Settings.${key}.Hint`,
+      scope: "client",
+      config: true,
+      type: Boolean,
+      default: def,
+      onChange: (v) => controller.view?.setAmbienceOptions({ [key]: v }),
+    });
+  }
   game.settings.register(MODULE_ID, "wallTextureFit", {
     name: "F3D.Settings.WallTextureFit.Name",
     hint: "F3D.Settings.WallTextureFit.Hint",
@@ -327,6 +341,10 @@ Hooks.on("getSceneControlButtons", (controls) => {
 
 // Per-wall 3D texture field in the Wall configuration sheet (v13 ApplicationV2; v12 jQuery).
 Hooks.on("renderWallConfig", (app, html) => injectWallConfig(app, html));
+// Texture library: "Library" buttons next to texture fields, and the scene's 3D theme.
+Hooks.once("ready", () => installLibraryButtons());
+Hooks.on("renderSettingsConfig", (app, html) => injectSettingsButtons(html));
+Hooks.on("renderSceneConfig", (app, html) => injectSceneConfig(app, html));
 // Directional / animated sprite sheet fields in the Token configuration sheets.
 Hooks.on("renderTokenConfig", (app, html) => injectTokenConfig(app, html));
 Hooks.on("renderPrototypeTokenConfig", (app, html) => injectTokenConfig(app, html));

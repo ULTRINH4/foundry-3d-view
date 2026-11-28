@@ -1,0 +1,33 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Texture library</title>
+  <style>
+    body { background: #1b1b1f; color: #ddd; font: 13px system-ui, sans-serif; margin: 16px; }
+    .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
+    figure { margin: 0; background: #26262c; padding: 8px; border-radius: 6px; text-align: center; }
+    figure img { max-width: 100%; height: 120px; object-fit: contain; display: block; margin: 0 auto 4px; }
+    figure .n { height: 40px; }
+    h2 { margin: 18px 0 8px; font-size: 15px; }
+  </style>
+</head>
+<body>
+  <div id="out"></div>
+  <script type="module">
+    import { LIBRARY } from "../scripts/core/library.mjs";
+    import { drawLibraryTexture, libraryThumbnail } from "../scripts/render/texture-library.mjs";
+    const out = document.getElementById("out");
+    for (const kind of ["wall", "door", "window", "glass"]) {
+      out.insertAdjacentHTML("beforeend", `<h2>${kind}</h2><div class="grid" id="g-${kind}"></div>`);
+      for (const e of LIBRARY.filter((x) => x.kind === kind)) {
+        const t = drawLibraryTexture("f3d:" + e.id);
+        const normal = t.normal ? `<img class="n" src="${t.normal.toDataURL()}">` : "";
+        document.getElementById(`g-${kind}`).insertAdjacentHTML("beforeend",
+          `<figure><img src="${libraryThumbnail("f3d:" + e.id, 160)}">${normal}<figcaption>${e.id}</figcaption></figure>`);
+      }
+    }
+    document.body.dataset.done = "1";
+  </script>
+</body>
+</html>

@@ -657,6 +657,77 @@ await gm.evaluate(async () => {
 await sleep(800);
 check("back to map look", (await keyOf(ids.plainWall)) === "map");
 
+// Texture library: the Library button in the Wall config sheet opens the thumbnails; picking one
+// fills the field with its f3d: path.
+await gm.evaluate((id) => canvas.scene.walls.get(id).sheet.render(true), ids.plainWall);
+await gm.waitForSelector('.f3d-lib-btn[data-target="flags.foundry-3d-view.texture"]', { timeout: 15000 }).catch(() => {});
+await gm.locator('.f3d-lib-btn[data-target="flags.foundry-3d-view.texture"]').first().click().catch(() => {});
+await gm.waitForSelector(".f3d-lib-item", { timeout: 15000 }).catch(() => {});
+const libDialog = await gm.evaluate(() => ({
+  items: document.querySelectorAll(".f3d-lib-item").length,
+  thumbs: [...document.querySelectorAll(".f3d-lib-item img")].filter((i) => i.src.startsWith("data:image")).length,
+}));
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-library.png`) });
+await gm.locator('.f3d-lib-item[data-src="f3d:wall/marble"]').click().catch(() => {});
+await sleep(600);
+const picked = await gm.evaluate(() => {
+  const el = document.querySelector('[name="flags.foundry-3d-view.texture"]');
+  return el?.value ?? el?.querySelector?.("input")?.value ?? null;
+});
+check("texture library: 12 wall thumbnails, picking one fills the field", libDialog.items === 12 && libDialog.thumbs === 12 && picked === "f3d:wall/marble", JSON.stringify({ ...libDialog, picked }));
+await gm.evaluate((id) => canvas.scene.walls.get(id).sheet.close(), ids.plainWall);
+await sleep(500);
+
+// Scene config: the 3D section with ambience themes; saving a theme restyles this scene in 3D
+await gm.evaluate(() => canvas.scene.sheet.render(true));
+await gm.waitForSelector('.f3d-scene-style select[name="flags.foundry-3d-view.style.theme"]', { timeout: 15000 }).catch(() => {});
+const sceneField = await gm.evaluate(() => {
+  const sel = document.querySelector('.f3d-scene-style select[name="flags.foundry-3d-view.style.theme"]');
+  return sel ? sel.options.length : 0;
+});
+let themed = null;
+if (sceneField) {
+  await gm.evaluate(() => {
+    const sel = document.querySelector('.f3d-scene-style select[name="flags.foundry-3d-view.style.theme"]');
+    sel.value = "dungeon";
+    sel.dispatchEvent(new Event("change", { bubbles: true }));
+  });
+  const form = gm.locator(".f3d-scene-style").locator("xpath=ancestor::form[1]");
+  await form.locator('button[type="submit"]').first().click().catch(() => {});
+  await sleep(3000);
+  themed = await gm.evaluate((ids) => {
+    const v = game.modules.get("foundry-3d-view").api._controller.view;
+    return {
+      flag: canvas.scene.getFlag("foundry-3d-view", "style")?.theme,
+      wall: v.wallMaterialKeyOf(ids.plainWall), door: v.wallMaterialKeyOf(ids.corridorDoor),
+      relief: !!v.wallMaterials.get(v.wallMaterialKeyOf(ids.plainWall))?.normalMap,
+      sky: v.scene.background.getHexString(), dust: !!v.ambience.dust,
+    };
+  }, ids);
+  await gm.evaluate(() => canvas.scene.sheet?.close?.());
+}
+check("Scene config has the 3D theme section", sceneField === 8, String(sceneField));
+check("scene theme 'Dungeon': stone walls with relief, reinforced doors, dark sky, dust", !!themed && themed.flag === "dungeon"
+  && themed.wall === "tex:repeat:1:f3d:wall/dungeon-stone" && themed.door === "door:fit:f3d:door/reinforced" && themed.relief && themed.sky === "07070b" && themed.dust,
+  JSON.stringify(themed));
+await gm.evaluate(() => { const v = game.modules.get("foundry-3d-view").api._controller.view; v.setTopDown(false); v.resetCamera({ x: 1000, y: 800 }); });
+await sleep(2000);
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-theme-dungeon.png`) });
+// Foundry weather -> 3D particles
+await gm.evaluate(() => canvas.scene.update({ weather: "rain" }));
+await sleep(2000);
+const rain = await gm.evaluate(() => game.modules.get("foundry-3d-view").api._controller.view.ambience.weatherCount);
+check("scene weather (rain) falls in 3D", rain > 500, String(rain));
+await gm.screenshot({ path: join(shots, `foundry-real-${GEN}-weather-rain.png`) });
+await gm.evaluate(async () => {
+  await canvas.scene.update({ weather: "", "flags.foundry-3d-view.-=style": null });
+});
+await sleep(2500);
+check("clearing the theme and weather restores the world look", await gm.evaluate((id) => {
+  const v = game.modules.get("foundry-3d-view").api._controller.view;
+  return v.wallMaterialKeyOf(id) === "map" && !v.ambience.weather && !v.ambience.dust;
+}, ids.plainWall));
+
 // Wall kinds from real Foundry walls
 const kinds = await gm.evaluate((ids) => {
   const v = game.modules.get("foundry-3d-view").api._controller.view;

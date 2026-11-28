@@ -37,6 +37,8 @@ export function lightData(doc) {
     alpha: cfg.alpha !== undefined ? Number(cfg.alpha) : 0.5,
     hidden: !!doc.hidden,
     negative: !!cfg.negative || Number(cfg.luminosity) < 0,
+    // Foundry light animation ("torch", "flame", ...): flickers in 3D
+    animation: cfg.animation?.type || null,
   };
 }
 
@@ -58,6 +60,7 @@ export function tokenLightData(doc) {
     alpha: l.alpha !== undefined ? Number(l.alpha) : 0.5,
     hidden: false,
     negative: false,
+    animation: l.animation?.type || null,
   };
 }
 
